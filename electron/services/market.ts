@@ -1,4 +1,15 @@
-import yahooFinance from 'yahoo-finance2'
+// Behind corporate SSL-inspection proxies, Node fetch rejects self-signed certs.
+// Bypass only in dev; production uses system CA bundle via Electron.
+if (process.env.NODE_ENV === 'development') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+}
+
+// yahoo-finance2 v3: default export is the class constructor, must be instantiated
+// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-require-imports
+const yahooFinance: any = new (require('yahoo-finance2').default)({
+  suppressNotices: ['yahooSurvey', 'ripHistorical'],
+  validation: { logErrors: false, logOptionsErrors: false },
+})
 import axios from 'axios'
 import { withCache, TTL } from './cache'
 import { yahooLimiter, finnhubLimiter } from './ratelimit'
@@ -69,7 +80,7 @@ export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]
   return withCache(key, TTL.QUOTE, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const results: any = await yahooFinance.quote(symbols as any)
+    const results: any = await yahooFinance.quote(symbols, {}, { validateResult: false })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const arr: any[] = Array.isArray(results) ? results : [results]
     return arr.map((q) => ({
@@ -94,9 +105,13 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
   return withCache(key, TTL.HISTORY, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rows: any[] = await yahooFinance.historical(symbol, { period1: periodToDate(period), interval: '1d' } as any)
-    return rows.map((r) => ({
-      date: r.date.toISOString().slice(0, 10),
+    const result: any = await yahooFinance.chart(symbol, {
+      period1: periodToDate(period).toISOString().slice(0, 10),
+      interval: '1d',
+    }, { validateResult: false })
+    const quotes: any[] = result?.quotes ?? []
+    return quotes.map((r) => ({
+      date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date ?? ''),
       open: r.open ?? 0,
       high: r.high ?? 0,
       low: r.low ?? 0,
@@ -160,7 +175,7 @@ export async function searchSymbols(query: string): Promise<CachedResult<SearchR
   return withCache(key, TTL.SEARCH, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res: any = await yahooFinance.search(query, { quotesCount: 10, newsCount: 0 } as any)
+    const res: any = await yahooFinance.search(query, { quotesCount: 10, newsCount: 0 }, { validateResult: false })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return ((res.quotes ?? []) as any[]).map((q) => ({
       symbol: q.symbol ?? '',
@@ -186,7 +201,7 @@ async function fetchScreener(scrId: string): Promise<CachedResult<ScreenerItem[]
   return withCache(key, TTL.SCREENER, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res: any = await yahooFinance.screener({ scrIds: scrId, count: 10 } as any)
+    const res: any = await yahooFinance.screener(scrId, { count: 10 }, { validateResult: false })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return ((res.quotes ?? []) as any[]).map((q) => ({
       symbol: q.symbol ?? '',
@@ -224,7 +239,7 @@ export async function getNews(symbol: string): Promise<CachedResult<NewsItem[]>>
     // fallback: yahoo news via search
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const res: any = await yahooFinance.search(symbol, { quotesCount: 0, newsCount: 8 } as any)
+    const res: any = await yahooFinance.search(symbol, { quotesCount: 0, newsCount: 8 }, { validateResult: false })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return ((res.news ?? []) as any[]).map((n) => ({
       headline: n.title ?? '',
