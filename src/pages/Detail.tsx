@@ -35,7 +35,7 @@ export function Detail() {
   const navigate = useNavigate()
   const { holdings } = usePortfolioStore()
 
-  const [period, setPeriod] = useState<Period>('1w')
+  const [period, setPeriod] = useState<Period>('1d')
   const [bars, setBars] = useState<HistoryBar[]>([])
   const [quote, setQuote] = useState<Quote | null>(null)
   const [news, setNews] = useState<NewsItem[]>([])

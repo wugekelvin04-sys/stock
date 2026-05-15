@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -6,6 +6,7 @@ import {
   ColorType,
   CrosshairMode,
   type UTCTimestamp,
+  type IChartApi,
 } from 'lightweight-charts'
 import type { HistoryBar } from '../../electron/services/market'
 
@@ -16,6 +17,16 @@ interface Props {
   mode?: 'candle' | 'line'
 }
 
+interface TooltipState {
+  visible: boolean
+  x: number
+  price: number
+  open?: number
+  high?: number
+  low?: number
+  time: string
+}
+
 function sma(bars: HistoryBar[], period: number): { time: string; value: number }[] {
   const result: { time: string; value: number }[] = []
   for (let i = period - 1; i < bars.length; i++) {
@@ -23,6 +34,20 @@ function sma(bars: HistoryBar[], period: number): { time: string; value: number 
     result.push({ time: bars[i].date, value: parseFloat((sum / period).toFixed(4)) })
   }
   return result
+}
+
+function fmt(n: number) {
+  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtTime(ts: number | string, isIntraday: boolean): string {
+  if (isIntraday && typeof ts === 'number') {
+    return new Date(ts * 1000).toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false,
+    }) + ' ET'
+  }
+  if (typeof ts === 'string') return ts
+  return String(ts)
 }
 
 const COLORS = {
@@ -38,7 +63,8 @@ const COLORS = {
 
 export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const chartRef = useRef<ReturnType<typeof createChart> | null>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, price: 0, time: '' })
 
   useEffect(() => {
     if (!containerRef.current || bars.length === 0) return
@@ -66,7 +92,6 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
     chartRef.current = chart
 
     if (mode === 'line') {
-      // Line chart mode (for intraday data)
       const lineSeries = chart.addSeries(LineSeries, {
         color: COLORS.ma20,
         lineWidth: 2,
@@ -74,15 +99,27 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         lastValueVisible: true,
         priceLineVisible: false,
       })
-      // Intraday bars have ISO datetime strings; convert to UTCTimestamp (seconds)
-      lineSeries.setData(
-        bars.map((b) => ({
-          time: Math.floor(new Date(b.date).getTime() / 1000) as UTCTimestamp,
-          value: b.close,
-        })),
-      )
+      const data = bars.map((b) => ({
+        time: Math.floor(new Date(b.date).getTime() / 1000) as UTCTimestamp,
+        value: b.close,
+      }))
+      lineSeries.setData(data)
+
+      chart.subscribeCrosshairMove((param) => {
+        if (!param.point || !param.time) {
+          setTooltip(t => ({ ...t, visible: false }))
+          return
+        }
+        const v = param.seriesData.get(lineSeries) as { value?: number } | undefined
+        if (v?.value == null) { setTooltip(t => ({ ...t, visible: false })); return }
+        setTooltip({
+          visible: true,
+          x: param.point.x,
+          price: v.value,
+          time: fmtTime(param.time as number, true),
+        })
+      })
     } else {
-      // Candlestick mode
       const candleSeries = chart.addSeries(CandlestickSeries, {
         upColor: COLORS.up,
         downColor: COLORS.down,
@@ -101,51 +138,52 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         })),
       )
 
-      // MA 20
       if (bars.length >= 20) {
-        const ma20Series = chart.addSeries(LineSeries, {
-          color: COLORS.ma20,
-          lineWidth: 1,
-          title: 'MA20',
-          crosshairMarkerVisible: false,
-          lastValueVisible: false,
-          priceLineVisible: false,
+        const ma20 = chart.addSeries(LineSeries, {
+          color: COLORS.ma20, lineWidth: 1, title: 'MA20',
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
         })
-        ma20Series.setData(sma(bars, 20))
+        ma20.setData(sma(bars, 20))
       }
-
-      // MA 50
       if (bars.length >= 50) {
-        const ma50Series = chart.addSeries(LineSeries, {
-          color: COLORS.ma50,
-          lineWidth: 1,
-          title: 'MA50',
-          crosshairMarkerVisible: false,
-          lastValueVisible: false,
-          priceLineVisible: false,
+        const ma50 = chart.addSeries(LineSeries, {
+          color: COLORS.ma50, lineWidth: 1, title: 'MA50',
+          crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
         })
-        ma50Series.setData(sma(bars, 50))
+        ma50.setData(sma(bars, 50))
       }
-
-      // Cost basis line
       if (costBasis) {
         candleSeries.createPriceLine({
-          price: costBasis,
-          color: COLORS.cost,
-          lineWidth: 1,
-          lineStyle: 2, // dashed
-          axisLabelVisible: true,
-          title: '成本',
+          price: costBasis, color: COLORS.cost, lineWidth: 1,
+          lineStyle: 2, axisLabelVisible: true, title: '成本',
         })
       }
+
+      chart.subscribeCrosshairMove((param) => {
+        if (!param.point || !param.time) {
+          setTooltip(t => ({ ...t, visible: false }))
+          return
+        }
+        const bar = param.seriesData.get(candleSeries) as {
+          open?: number; high?: number; low?: number; close?: number
+        } | undefined
+        if (bar?.close == null) { setTooltip(t => ({ ...t, visible: false })); return }
+        setTooltip({
+          visible: true,
+          x: param.point.x,
+          price: bar.close,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          time: fmtTime(param.time as string, false),
+        })
+      })
     }
 
     chart.timeScale().fitContent()
 
     const ro = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth })
-      }
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth })
     })
     ro.observe(containerRef.current)
 
@@ -153,6 +191,7 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
       ro.disconnect()
       chart.remove()
       chartRef.current = null
+      setTooltip(t => ({ ...t, visible: false }))
     }
   }, [bars, costBasis, height, mode])
 
@@ -164,5 +203,31 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
     )
   }
 
-  return <div ref={containerRef} className="w-full rounded-lg overflow-hidden" style={{ height }} />
+  return (
+    <div className="relative w-full rounded-lg overflow-hidden" style={{ height }}>
+      <div ref={containerRef} className="w-full h-full" />
+
+      {/* Crosshair tooltip */}
+      {tooltip.visible && (
+        <div
+          className="pointer-events-none absolute top-2 left-3 flex items-center gap-3 rounded-md border border-border bg-bg-elevated/90 px-2.5 py-1.5 backdrop-blur-sm"
+          style={{ zIndex: 10 }}
+        >
+          <span className="text-xs text-fg-subtle">{tooltip.time}</span>
+          {mode === 'line' ? (
+            <span className="font-mono text-sm font-semibold text-fg">${fmt(tooltip.price)}</span>
+          ) : (
+            <>
+              <span className="font-mono text-sm font-semibold text-fg">${fmt(tooltip.price)}</span>
+              {tooltip.open != null && (
+                <span className="text-xs text-fg-subtle font-mono">
+                  O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
