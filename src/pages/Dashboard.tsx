@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react'
 import { SectionCard } from '../components/SectionCard'
 import { TickerRow } from '../components/TickerRow'
 import { HourlyInsight } from '../components/HourlyInsight'
+import { WatchlistSection } from '../components/WatchlistSection'
 import { toast } from '../stores/toast'
 import type { ScreenerItem, CachedResult } from '../../electron/services/market'
 
@@ -21,17 +22,17 @@ export function Dashboard() {
   const [sparklines, setSparklines] = useState<Record<string, number[]>>({})
 
   async function loadSparklines(symbols: string[]) {
-    const limited = symbols.slice(0, 10)
-    for (const sym of limited) {
+    // Fetch all in parallel (deduplicated, no hard cap so both gainers+losers get lines)
+    await Promise.all(symbols.map(async (sym) => {
       try {
         const result = await window.api.market.intraday(sym)
         if (result?.data?.length) {
           setSparklines(prev => ({ ...prev, [sym]: result.data.map(b => b.close) }))
         }
       } catch {
-        // silently ignore intraday failures
+        // silently ignore
       }
-    }
+    }))
   }
 
   const load = async () => {
@@ -47,12 +48,10 @@ export function Dashboard() {
       if (p) setPicks(p)
       setLastRefresh(Date.now())
 
-      // Load sparklines for all gainers + losers (up to 10 symbols total)
-      const symbols = [
-        ...(g?.data ?? []).map(i => i.symbol),
-        ...(l?.data ?? []).map(i => i.symbol),
-      ]
-      void loadSparklines(symbols)
+      // Load sparklines separately for gainers and losers (each up to 10)
+      const gainerSyms = (g?.data ?? []).map(i => i.symbol)
+      const loserSyms = (l?.data ?? []).map(i => i.symbol)
+      void loadSparklines([...new Set([...gainerSyms, ...loserSyms])])
     } catch (e) {
       const msg = (e as Error).message ?? String(e)
       if (msg.includes('rate') || msg.includes('429')) {
@@ -235,6 +234,9 @@ export function Dashboard() {
             )}
           </SectionCard>
         </div>
+
+        {/* 自选股快览 */}
+        <WatchlistSection />
 
         {/* 整点 Insight 时间线 */}
         <HourlyInsight />

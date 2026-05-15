@@ -5,6 +5,7 @@ import {
   LineSeries,
   ColorType,
   CrosshairMode,
+  type UTCTimestamp,
 } from 'lightweight-charts'
 import type { HistoryBar } from '../../electron/services/market'
 
@@ -73,8 +74,12 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         lastValueVisible: true,
         priceLineVisible: false,
       })
+      // Intraday bars have ISO datetime strings; convert to UTCTimestamp (seconds)
       lineSeries.setData(
-        bars.map((b) => ({ time: b.date, value: b.close })),
+        bars.map((b) => ({
+          time: Math.floor(new Date(b.date).getTime() / 1000) as UTCTimestamp,
+          value: b.close,
+        })),
       )
     } else {
       // Candlestick mode
