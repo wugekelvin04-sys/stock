@@ -8,6 +8,7 @@ import { Settings } from './pages/Settings'
 import { Watchlist } from './pages/Watchlist'
 import { Chat } from './pages/Chat'
 import { ToastContainer } from './components/Toast'
+import { ProtectedRoute } from './components/ProtectedRoute'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 5 * 60 * 1000, retry: 1 } },
@@ -20,7 +21,9 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Dashboard />} />
-            <Route path="portfolio" element={<Portfolio />} />
+            <Route element={<ProtectedRoute />}>
+              <Route path="portfolio" element={<Portfolio />} />
+            </Route>
             <Route path="detail/:symbol" element={<Detail />} />
             <Route path="settings" element={<Settings />} />
             <Route path="watchlist" element={<Watchlist />} />

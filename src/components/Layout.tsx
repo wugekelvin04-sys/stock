@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, Star, Search, Settings, MessageSquare } from 'lucide-react'
+import { LayoutDashboard, Briefcase, Star, Search, Settings, MessageSquare, Activity } from 'lucide-react'
 import { SearchBar } from './SearchBar'
+import { PrefetchTaskPanel } from './PrefetchTaskPanel'
 import { useEffect, useState } from 'react'
 import { toast } from '../stores/toast'
 
@@ -13,6 +14,13 @@ const NAV = [
 
 export function Layout() {
   const [searchOpen, setSearchOpen] = useState(false)
+  const [taskOpen, setTaskOpen] = useState(false)
+  const [prefetchRunning, setPrefetchRunning] = useState(false)
+
+  useEffect(() => {
+    const unsub = window.api.prefetch.onStatus(s => setPrefetchRunning(s.running))
+    return () => { unsub() }
+  }, [])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -37,7 +45,7 @@ export function Layout() {
   }, [])
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full relative">
       {/* Sidebar */}
       <aside className="flex w-14 flex-col items-center gap-1 border-r border-border bg-bg py-3">
         {/* drag region at top */}
@@ -64,6 +72,16 @@ export function Layout() {
         <div className="flex-1" />
 
         <button
+          title="后台任务"
+          onClick={() => setTaskOpen(p => !p)}
+          className={`relative flex h-9 w-9 items-center justify-center rounded-md transition-colors ${taskOpen ? 'bg-accent/15 text-accent' : 'text-fg-subtle hover:bg-bg-subtle hover:text-fg-muted'}`}
+        >
+          <Activity size={18} />
+          {prefetchRunning && (
+            <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-accent animate-pulse" />
+          )}
+        </button>
+        <button
           title="搜索 (⌘K)"
           onClick={() => setSearchOpen(true)}
           className="flex h-9 w-9 items-center justify-center rounded-md text-fg-subtle transition-colors hover:bg-bg-subtle hover:text-fg-muted"
@@ -84,6 +102,7 @@ export function Layout() {
         <Outlet />
       </div>
 
+      {taskOpen && <PrefetchTaskPanel onClose={() => setTaskOpen(false)} />}
       {searchOpen && <SearchBar onClose={() => setSearchOpen(false)} />}
     </div>
   )

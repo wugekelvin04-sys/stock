@@ -15,6 +15,9 @@ export function getDb(): Database.Database {
 }
 
 function migrate(db: Database.Database) {
+  // Column additions for existing DBs (ALTER TABLE is idempotent via try/catch)
+  try { db.exec(`ALTER TABLE holdings ADD COLUMN direction TEXT CHECK(direction IN ('buy','sell',NULL))`) } catch { /* already exists */ }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS holdings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,6 +28,7 @@ function migrate(db: Database.Database) {
       strike REAL,
       expiry TEXT,
       side TEXT CHECK(side IN ('call','put',NULL)),
+      direction TEXT CHECK(direction IN ('buy','sell',NULL)),
       exchange TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -83,6 +87,35 @@ function migrate(db: Database.Database) {
       picks_json TEXT NOT NULL,
       created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    CREATE TABLE IF NOT EXISTS stock_profile (
+      symbol TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_catalyst (
+      symbol TEXT NOT NULL,
+      date TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (symbol, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_ratings (
+      symbol TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      date TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS stock_earnings (
+      symbol TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      next_earnings_date TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `)
 }
 
@@ -97,14 +130,15 @@ export interface HoldingRow {
   strike?: number
   expiry?: string
   side?: 'call' | 'put'
+  direction?: 'buy' | 'sell'
   exchange?: string
 }
 
 export function saveHoldings(records: Omit<HoldingRow, 'id'>[]) {
   const db = getDb()
   const upsert = db.prepare(`
-    INSERT INTO holdings (symbol, type, qty, cost_basis, strike, expiry, side, exchange, updated_at)
-    VALUES (@symbol, @type, @qty, @costBasis, @strike, @expiry, @side, @exchange, unixepoch())
+    INSERT INTO holdings (symbol, type, qty, cost_basis, strike, expiry, side, direction, exchange, updated_at)
+    VALUES (@symbol, @type, @qty, @costBasis, @strike, @expiry, @side, @direction, @exchange, unixepoch())
     ON CONFLICT DO NOTHING
   `)
   const insertMany = db.transaction((rows: typeof records) => {
@@ -115,12 +149,12 @@ export function saveHoldings(records: Omit<HoldingRow, 'id'>[]) {
 
 export function listHoldings(): HoldingRow[] {
   return getDb()
-    .prepare(`SELECT id, symbol, type, qty, cost_basis as costBasis, strike, expiry, side, exchange FROM holdings ORDER BY symbol`)
+    .prepare(`SELECT id, symbol, type, qty, cost_basis as costBasis, strike, expiry, side, direction, exchange FROM holdings ORDER BY symbol`)
     .all() as HoldingRow[]
 }
 
 export function updateHolding(id: number, fields: Partial<Omit<HoldingRow, 'id'>>) {
-  const allowed = ['symbol', 'type', 'qty', 'costBasis', 'strike', 'expiry', 'side', 'exchange'] as const
+  const allowed = ['symbol', 'type', 'qty', 'costBasis', 'strike', 'expiry', 'side', 'direction', 'exchange'] as const
   const sets = allowed.filter(k => k in fields).map(k => {
     const col = k === 'costBasis' ? 'cost_basis' : k
     return `${col} = @${k}`
@@ -303,4 +337,93 @@ export function isWatched(symbol: string): { groupId: number; groupName: string 
   return getDb()
     .prepare(`SELECT wi.group_id as groupId, wg.name as groupName FROM watchlist_items wi JOIN watchlist_groups wg ON wg.id = wi.group_id WHERE wi.symbol = ?`)
     .all(symbol.toUpperCase()) as { groupId: number; groupName: string }[]
+}
+
+// ── Stock Profile (permanent) ─────────────────────────────────────────────────
+
+export interface StockProfile {
+  symbol: string
+  content: string
+  tags: string[]
+  createdAt: number
+}
+
+export function getStockProfile(symbol: string): StockProfile | null {
+  const row = getDb()
+    .prepare(`SELECT symbol, content, tags_json, created_at as createdAt FROM stock_profile WHERE symbol = ?`)
+    .get(symbol.toUpperCase()) as { symbol: string; content: string; tags_json: string; createdAt: number } | undefined
+  if (!row) return null
+  return { symbol: row.symbol, content: row.content, tags: JSON.parse(row.tags_json) as string[], createdAt: row.createdAt }
+}
+
+export function saveStockProfile(symbol: string, content: string, tags: string[]) {
+  getDb()
+    .prepare(`INSERT OR REPLACE INTO stock_profile (symbol, content, tags_json, created_at) VALUES (?, ?, ?, unixepoch())`)
+    .run(symbol.toUpperCase(), content, JSON.stringify(tags))
+}
+
+// ── Stock Catalyst (daily) ────────────────────────────────────────────────────
+
+export interface StockCatalyst {
+  symbol: string
+  date: string
+  content: string
+  createdAt: number
+}
+
+export function getStockCatalyst(symbol: string, date: string): StockCatalyst | null {
+  const row = getDb()
+    .prepare(`SELECT symbol, date, content, created_at as createdAt FROM stock_catalyst WHERE symbol = ? AND date = ?`)
+    .get(symbol.toUpperCase(), date) as StockCatalyst | undefined
+  return row ?? null
+}
+
+export function saveStockCatalyst(symbol: string, date: string, content: string) {
+  getDb()
+    .prepare(`INSERT OR REPLACE INTO stock_catalyst (symbol, date, content, created_at) VALUES (?, ?, ?, unixepoch())`)
+    .run(symbol.toUpperCase(), date, content)
+}
+
+// ── Stock Ratings (daily) ─────────────────────────────────────────────────────
+
+export interface StockRatings {
+  symbol: string
+  content: string
+  date: string
+  createdAt: number
+}
+
+export function getStockRatings(symbol: string, date: string): StockRatings | null {
+  const row = getDb()
+    .prepare(`SELECT symbol, content, date, created_at as createdAt FROM stock_ratings WHERE symbol = ? AND date = ?`)
+    .get(symbol.toUpperCase(), date) as StockRatings | undefined
+  return row ?? null
+}
+
+export function saveStockRatings(symbol: string, date: string, content: string) {
+  getDb()
+    .prepare(`INSERT OR REPLACE INTO stock_ratings (symbol, date, content, created_at) VALUES (?, ?, ?, unixepoch())`)
+    .run(symbol.toUpperCase(), date, content)
+}
+
+// ── Stock Earnings ────────────────────────────────────────────────────────────
+
+export interface StockEarnings {
+  symbol: string
+  content: string
+  nextEarningsDate: string
+  createdAt: number
+}
+
+export function getStockEarnings(symbol: string): StockEarnings | null {
+  const row = getDb()
+    .prepare(`SELECT symbol, content, next_earnings_date as nextEarningsDate, created_at as createdAt FROM stock_earnings WHERE symbol = ?`)
+    .get(symbol.toUpperCase()) as StockEarnings | undefined
+  return row ?? null
+}
+
+export function saveStockEarnings(symbol: string, content: string, nextEarningsDate: string) {
+  getDb()
+    .prepare(`INSERT OR REPLACE INTO stock_earnings (symbol, content, next_earnings_date, created_at) VALUES (?, ?, ?, unixepoch())`)
+    .run(symbol.toUpperCase(), content, nextEarningsDate)
 }

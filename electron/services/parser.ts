@@ -12,13 +12,47 @@ export interface HoldingRecord {
   strike?: number
   expiry?: string
   side?: 'call' | 'put'
+  direction?: 'buy' | 'sell'
   exchange?: string
 }
 
-const EXTRACT_PROMPT = `请从这张截图中提取股票持仓信息。
+const STOCK_PROMPT = `请从这张截图中提取【股票】持仓信息（不含期权）。
 输出严格的 JSON 数组,格式:
-[{"symbol":"AAPL","type":"stock","qty":100,"costBasis":150.5,"strike":null,"expiry":null,"side":null}]
-type 为 stock 或 option。期权才有 strike/expiry/side(call 或 put)。
+[{"symbol":"AAPL","type":"stock","qty":100,"costBasis":150.5,"strike":null,"expiry":null,"side":null,"direction":null}]
+字段说明:
+- type: 固定填 "stock"
+- side/strike/expiry: 均填 null
+- direction: 做多填 "buy", 做空填 "sell", 不确定填 null
+- costBasis: 每股平均成本/持仓均价
+- qty: 持仓股数(整数)
+如果识别不到任何持仓,返回空数组 []。
+只输出 JSON 数组,不要任何其他文字或 markdown。`
+
+const OPTION_PROMPT = `请从这张截图中提取【期权】持仓信息（不含股票）。
+输出严格的 JSON 数组,格式:
+[{"symbol":"AAPL","type":"option","qty":2,"costBasis":3.50,"strike":200,"expiry":"2025-06-20","side":"call","direction":"buy"}]
+字段说明:
+- type: 固定填 "option"
+- side: "call" 或 "put"
+- direction: 买入期权填 "buy", 卖出/做空期权填 "sell"
+- costBasis: 每股期权金(premium per share, 不乘以100)
+- qty: 合约张数(整数)
+- strike: 行权价(数字)
+- expiry: 到期日 YYYY-MM-DD 格式
+如果识别不到任何期权持仓,返回空数组 []。
+只输出 JSON 数组,不要任何其他文字或 markdown。`
+
+const AUTO_PROMPT = `请从这张截图中提取股票和期权持仓信息。
+输出严格的 JSON 数组,格式:
+[{"symbol":"AAPL","type":"stock","qty":100,"costBasis":150.5,"strike":null,"expiry":null,"side":null,"direction":null}]
+字段说明:
+- type: "stock" 或 "option"
+- side: 期权类型 "call"/"put", 股票填 null
+- direction: 买入填 "buy", 卖出/做空填 "sell", 不确定填 null
+- costBasis: 股票为每股均价; 期权为每股期权金(premium per share)
+- strike: 期权行权价, 股票填 null
+- expiry: 期权到期日 YYYY-MM-DD, 股票填 null
+- qty: 股票为股数, 期权为合约张数
 如果识别不到任何持仓,返回空数组 []。
 只输出 JSON 数组,不要任何其他文字或 markdown。`
 
@@ -143,6 +177,7 @@ function parseClaudeOutput(raw: string): HoldingRecord[] {
       strike: r.strike != null ? Number(r.strike) : undefined,
       expiry: r.expiry ? String(r.expiry) : undefined,
       side: r.side === 'call' || r.side === 'put' ? r.side : undefined,
+      direction: r.direction === 'buy' || r.direction === 'sell' ? r.direction : undefined,
       exchange: r.exchange ? String(r.exchange) : undefined,
     }))
 }
@@ -154,7 +189,9 @@ function mediaTypeFromExt(ext: string): string {
   return 'image/png'
 }
 
-export async function parseFile(filePath: string): Promise<HoldingRecord[]> {
+export type ImportHint = 'stock' | 'option' | 'auto'
+
+export async function parseFile(filePath: string, hint: ImportHint = 'auto'): Promise<HoldingRecord[]> {
   const info = await detectClaude()
   if (!info.ok || !info.path) {
     throw new Error(info.error ?? 'claude CLI not found')
@@ -171,6 +208,7 @@ export async function parseFile(filePath: string): Promise<HoldingRecord[]> {
     images = [{ data, mediaType: mediaTypeFromExt(ext) }]
   }
 
-  const raw = await runClaude(info.path, EXTRACT_PROMPT, images)
+  const prompt = hint === 'stock' ? STOCK_PROMPT : hint === 'option' ? OPTION_PROMPT : AUTO_PROMPT
+  const raw = await runClaude(info.path, prompt, images)
   return parseClaudeOutput(raw)
 }

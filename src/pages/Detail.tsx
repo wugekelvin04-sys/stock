@@ -3,6 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, ExternalLink, Star } from 'lucide-react'
 import { PriceChart } from '../components/PriceChart'
 import { AnalysisPanel } from '../components/AnalysisPanel'
+import { StockProfilePanel } from '../components/StockProfilePanel'
+import { StockCatalystPanel } from '../components/StockCatalystPanel'
+import { StockRatingsPanel } from '../components/StockRatingsPanel'
+import { StockEarningsPanel } from '../components/StockEarningsPanel'
 import { OptionsChain } from '../components/OptionsChain'
 import { usePortfolioStore } from '../stores/portfolio'
 import { toast } from '../stores/toast'
@@ -506,6 +510,12 @@ export function Detail() {
             </div>
           </div>
         )}
+
+        {/* Stock Profile & Catalyst */}
+        {symbol && <StockProfilePanel symbol={symbol} />}
+        {symbol && <StockCatalystPanel symbol={symbol} />}
+        {symbol && <StockRatingsPanel symbol={symbol} />}
+        {symbol && <StockEarningsPanel symbol={symbol} />}
 
         {/* AI Analysis */}
         {symbol && <AnalysisPanel symbol={symbol} context={analysisContext} />}

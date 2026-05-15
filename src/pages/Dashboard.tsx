@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
-import { RefreshCw, Sparkles, Star, ChevronRight, TrendingUp, TrendingDown, ChevronDown, Send, Square, Bot, RotateCcw } from 'lucide-react'
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
+import { RefreshCw, Sparkles, Star, ChevronRight, TrendingUp, TrendingDown, ChevronDown, Send, Square, Bot, RotateCcw, Eye, EyeOff } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { WatchlistSection } from '../components/WatchlistSection'
 import { toast } from '../stores/toast'
+import { useAuthStore } from '../stores/auth'
 import type { ScreenerItem, IndexItem, CachedResult } from '../../electron/services/market'
 import type { HoldingRow, SectorPick } from '../../electron/services/db'
 import type { ChatMessage } from '../../electron/services/claude'
@@ -267,7 +268,11 @@ function SectorPanel({ picks, stockQuotes, running, progress, onRefresh, date }:
   date: string | null
 }) {
   const navigate = useNavigate()
-  const [expanded, setExpanded] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(() => picks[0]?.etf ?? null)
+
+  useEffect(() => {
+    if (picks.length > 0 && expanded === null) setExpanded(picks[0].etf)
+  }, [picks])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex min-h-0 flex-col overflow-hidden">
@@ -363,16 +368,122 @@ function SectorPanel({ picks, stockQuotes, running, progress, onRefresh, date }:
   )
 }
 
+function optionKey(symbol: string, expiry: string, strike: number, side: string) {
+  return `${symbol}:${expiry}:${strike}:${side}`
+}
+
 // ── Holding row ───────────────────────────────────────────────────────────────
 
-// Table header for holdings
-function HoldingTableHeader() {
+type HoldingSortKey = 'symbol' | 'qty' | 'mktVal' | 'costBasis' | 'price' | 'dayPct' | 'dayPnl' | 'totalPnl' | 'totalPnlPct'
+
+// col layout: symbol | qty | mktVal | avgCost | price | dayPnl | day% | totalPnl$ | totalPnl%
+const H_COLS = 'grid-cols-[minmax(0,2fr)_1fr_1.4fr_1.4fr_1.4fr_1.4fr_1.2fr_1.4fr_1.1fr]'
+
+function HoldingTableHeader({ sortKey, sortAsc, onSort }: {
+  sortKey: HoldingSortKey; sortAsc: boolean; onSort: (k: HoldingSortKey) => void
+}) {
+  function Col({ k, label, cls }: { k: HoldingSortKey; label: string; cls?: string }) {
+    const active = sortKey === k
+    return (
+      <button onClick={() => onSort(k)}
+        className={`flex items-center gap-0.5 text-[10px] select-none transition-colors
+          ${active ? 'text-fg-muted' : 'text-fg-subtle hover:text-fg-muted'} ${cls ?? ''}`}>
+        {label}{active && <span className="text-[9px] opacity-50">{sortAsc ? '↑' : '↓'}</span>}
+      </button>
+    )
+  }
   return (
-    <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-2 px-2 pb-1 text-[10px] text-fg-subtle border-b border-border/50">
-      <span>标的</span>
-      <span className="text-right w-16">现价/均价</span>
-      <span className="text-right w-14">今日</span>
-      <span className="text-right w-20">持仓盈亏</span>
+    <div className={`grid ${H_COLS} gap-x-1.5 px-2 pb-1 border-b border-border/50`}>
+      <Col k="symbol"    label="标的" />
+      <Col k="qty"       label="股数"     cls="justify-end" />
+      <Col k="mktVal"    label="市场价"   cls="justify-end" />
+      <Col k="costBasis" label="均价"     cls="justify-end" />
+      <Col k="price"     label="现价"     cls="justify-end" />
+      <Col k="dayPnl"    label="今日盈亏" cls="justify-end" />
+      <Col k="dayPct"    label="今日%"    cls="justify-end" />
+      <Col k="totalPnl"    label="持仓盈亏" cls="justify-end" />
+      <Col k="totalPnlPct" label="%"        cls="justify-end" />
+    </div>
+  )
+}
+
+function HoldingSummaryRow({ holdings, quotes, optionQuotes }: {
+  holdings: HoldingRow[]
+  quotes: Record<string, { price: number; change: number; changePercent: number }>
+  optionQuotes?: Record<string, number>
+}) {
+  if (!holdings.length) return null
+  let totalVal = 0, totalCost = 0, totalDayPnl = 0, hasAll = true
+  for (const h of holdings) {
+    const m = h.type === 'option' ? 100 : 1
+    const q = quotes[h.symbol]
+    totalCost += h.costBasis * h.qty * m
+    if (h.type === 'option') {
+      const oKey = h.expiry && h.strike != null && h.side
+        ? optionKey(h.symbol, h.expiry, h.strike, h.side) : null
+      const contractPrice = oKey ? optionQuotes?.[oKey] : undefined
+      if (contractPrice != null) {
+        totalVal += contractPrice * h.qty * 100
+        // 期权今日涨跌用正股 change 估算方向，无精确合约日变动就跳过
+      } else if (q) {
+        // fallback: 正股价（不准确，标记 hasAll=false）
+        totalVal += q.price * h.qty * m
+        hasAll = false
+      } else {
+        totalVal += h.costBasis * h.qty * m
+        hasAll = false
+      }
+    } else {
+      if (q) {
+        totalVal += q.price * h.qty
+        totalDayPnl += q.change * h.qty
+      } else {
+        totalVal += h.costBasis * h.qty
+        hasAll = false
+      }
+    }
+  }
+  const totalPnl = totalVal - totalCost
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
+  const dayPct = totalCost > 0 ? (totalDayPnl / (totalVal - totalDayPnl || totalCost)) * 100 : 0
+  const pnlUp = totalPnl >= 0
+  const dayUp = totalDayPnl >= 0
+
+  function fmtM(v: number) {
+    const abs = Math.abs(v)
+    return (v >= 0 ? '+' : '-') + '$' + (abs >= 10000 ? (abs/1000).toFixed(1)+'K' : abs.toFixed(0))
+  }
+
+  return (
+    <div className={`grid ${H_COLS} gap-x-1.5 items-center px-2 py-1.5 mb-0.5 rounded-md bg-bg-subtle border border-border/40`}>
+      <div className="min-w-0">
+        <span className="text-[11px] font-semibold text-fg-muted">总计</span>
+        {!hasAll && <span className="ml-1 text-[9px] text-fg-subtle">部分</span>}
+      </div>
+      {/* qty */}
+      <div className="text-right font-mono text-[11px] text-fg-subtle">{holdings.length}只</div>
+      {/* 市场价（总市值） */}
+      <div className="text-right font-mono text-[11px] text-fg">${totalVal >= 10000 ? (totalVal/1000).toFixed(1)+'K' : totalVal.toFixed(0)}</div>
+      {/* 均价（总成本） */}
+      <div className="text-right font-mono text-[11px] text-fg-muted">${totalCost >= 10000 ? (totalCost/1000).toFixed(1)+'K' : totalCost.toFixed(0)}</div>
+      {/* 现价（空） */}
+      <div />
+      {/* 今日盈亏 */}
+      <div className={`text-right font-mono text-[11px] font-medium ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
+        {fmtM(totalDayPnl)}
+      </div>
+      {/* 今日% */}
+      <div className={`text-right font-mono text-[11px] font-medium ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
+        {dayUp ? '+' : ''}{dayPct.toFixed(2)}%
+      </div>
+      {/* 持仓盈亏$ */}
+      <div className={`text-right font-mono text-[11px] font-medium ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
+        {fmtM(totalPnl)}
+      </div>
+      {/* 持仓盈亏% */}
+      <div className={`text-right font-mono text-[11px] font-medium ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
+        {totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(1)}%
+      </div>
     </div>
   )
 }
@@ -380,63 +491,53 @@ function HoldingTableHeader() {
 function HoldingRow({ row, quote }: { row: HoldingRow; quote?: { price: number; change: number; changePercent: number } }) {
   const navigate = useNavigate()
   const isOption = row.type === 'option'
-  const multiplier = isOption ? 100 : 1
+  const m = isOption ? 100 : 1
   const mktPrice = quote?.price
-  const totalCost = row.costBasis * row.qty * multiplier
-  const totalVal = mktPrice != null ? mktPrice * row.qty * multiplier : null
-  const totalPnl = totalVal != null ? totalVal - totalCost : null
-  const totalPnlPct = totalCost > 0 && totalPnl != null ? (totalPnl / totalCost) * 100 : null
   const dayPct = quote?.changePercent
-  const pnlUp = (totalPnl ?? 0) >= 0
+  const dayPnl = quote != null ? quote.change * row.qty * m : null
+  const totalPnl = mktPrice != null ? (mktPrice - row.costBasis) * row.qty * m : null
+  const totalPnlPct = totalPnl != null ? (totalPnl / (row.costBasis * row.qty * m)) * 100 : null
   const dayUp = (dayPct ?? 0) >= 0
+  const pnlUp = (totalPnl ?? 0) >= 0
+  const label = isOption ? `${row.symbol} ${row.side?.toUpperCase()} $${row.strike}` : row.symbol
 
-  const label = isOption
-    ? `${row.symbol} ${row.side?.toUpperCase()} $${row.strike}`
-    : row.symbol
-
-  function fmtVal(v: number) {
+  function fmtP(v: number) { return v >= 100 ? v.toFixed(1) : v.toFixed(2) }
+  function fmtM(v: number) {
     const abs = Math.abs(v)
-    return (v >= 0 ? '+' : '-') + '$' + (abs >= 10000 ? (abs / 1000).toFixed(1) + 'K' : abs.toFixed(0))
+    return (v >= 0 ? '+' : '-') + '$' + (abs >= 10000 ? (abs/1000).toFixed(1)+'K' : abs.toFixed(0))
   }
 
   return (
     <div onClick={() => navigate(`/detail/${row.symbol}`)}
-      className="grid grid-cols-[1fr_auto_auto_auto] gap-x-2 items-center px-2 py-1.5 rounded-md cursor-pointer hover:bg-bg-subtle transition-colors">
-      {/* Col 1: symbol + qty */}
+      className={`grid ${H_COLS} gap-x-1.5 items-center px-2 py-1.5 rounded-md cursor-pointer hover:bg-bg-subtle transition-colors`}>
       <div className="min-w-0">
         <span className="font-mono text-[11px] font-semibold text-fg truncate block">{label}</span>
-        <span className="text-[10px] text-fg-subtle">
-          {row.qty}{isOption ? '张' : '股'} · 均${fmt(row.costBasis)}
-        </span>
       </div>
-      {/* Col 2: current price */}
-      <div className="w-16 text-right">
-        {mktPrice != null
-          ? <span className="font-mono text-[11px] text-fg">${mktPrice >= 100 ? mktPrice.toFixed(1) : mktPrice.toFixed(2)}</span>
-          : <span className="text-[10px] text-fg-subtle">—</span>}
+      {/* 股数 */}
+      <div className="text-right font-mono text-[11px] text-fg-muted">{Number.isInteger(row.qty) ? row.qty : row.qty.toFixed(2)}</div>
+      {/* 市场价（总市值） */}
+      <div className="text-right font-mono text-[11px] text-fg">
+        {mktPrice != null ? (() => { const v = mktPrice * row.qty * m; return '$' + (v >= 10000 ? (v/1000).toFixed(1)+'K' : v.toFixed(0)) })() : '—'}
       </div>
-      {/* Col 3: day change % */}
-      <div className="w-14 text-right">
-        {dayPct != null
-          ? <span className={`font-mono text-[11px] font-medium ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
-              {dayUp ? '+' : ''}{dayPct.toFixed(2)}%
-            </span>
-          : <span className="text-[10px] text-fg-subtle">—</span>}
+      {/* 均价 */}
+      <div className="text-right font-mono text-[11px] text-fg-muted">${fmtP(row.costBasis)}</div>
+      {/* 现价 */}
+      <div className="text-right font-mono text-[11px] text-fg">
+        {mktPrice != null ? `$${fmtP(mktPrice)}` : '—'}
       </div>
-      {/* Col 4: total P&L */}
-      <div className="w-20 text-right">
-        {totalPnl != null
-          ? <div>
-              <span className={`font-mono text-[11px] font-medium ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
-                {fmtVal(totalPnl)}
-              </span>
-              {totalPnlPct != null && (
-                <span className={`block text-[9px] ${pnlUp ? 'text-accent-up/70' : 'text-accent-down/70'}`}>
-                  {totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(1)}%
-                </span>
-              )}
-            </div>
-          : <span className="text-[10px] text-fg-subtle">—</span>}
+      {/* 今日盈亏 */}
+      <div className={`text-right font-mono text-[11px] font-medium ${dayPnl != null ? (dayUp ? 'text-accent-up' : 'text-accent-down') : 'text-fg-subtle'}`}>
+        {dayPnl != null ? fmtM(dayPnl) : '—'}
+      </div>
+      {/* 今日% */}
+      <div className={`text-right font-mono text-[11px] font-medium ${dayPct != null ? (dayUp ? 'text-accent-up' : 'text-accent-down') : 'text-fg-subtle'}`}>
+        {dayPct != null ? `${dayUp ? '+' : ''}${dayPct.toFixed(2)}%` : '—'}
+      </div>
+      <div className={`text-right font-mono text-[11px] font-medium ${totalPnl != null ? (pnlUp ? 'text-accent-up' : 'text-accent-down') : 'text-fg-subtle'}`}>
+        {totalPnl != null ? fmtM(totalPnl) : '—'}
+      </div>
+      <div className={`text-right font-mono text-[11px] font-medium ${totalPnl != null ? (pnlUp ? 'text-accent-up' : 'text-accent-down') : 'text-fg-subtle'}`}>
+        {totalPnlPct != null ? `${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(1)}%` : '—'}
       </div>
     </div>
   )
@@ -480,6 +581,110 @@ function PickRow({ rank, symbol, reason, quote }: { rank: number; symbol: string
   )
 }
 
+// ── Option Panel ─────────────────────────────────────────────────────────────
+
+function OptionPanel({ holdings, stockQuotes, optionQuotes }: {
+  holdings: HoldingRow[]
+  stockQuotes: Record<string, { price: number; change: number; changePercent: number }>
+  optionQuotes: Record<string, number>  // keyed by optionKey()
+}) {
+  const navigate = useNavigate()
+  if (!holdings.length) return (
+    <p className="py-4 text-center text-[11px] text-fg-subtle">暂无期权持仓</p>
+  )
+
+  function fmtM(v: number) {
+    const abs = Math.abs(v)
+    const sign = v >= 0 ? '+' : '-'
+    return sign + '$' + (abs >= 10000 ? (abs / 1000).toFixed(1) + 'K' : abs.toFixed(0))
+  }
+  function fmtP(v: number) { return v >= 100 ? v.toFixed(1) : v.toFixed(2) }
+
+  // Group by direction + side: Sell Put / Sell Call / Buy Call / Buy Put
+  const groups: { label: string; rows: HoldingRow[] }[] = []
+  const order: [string | undefined, string | undefined][] = [
+    ['sell', 'put'], ['sell', 'call'], ['buy', 'call'], ['buy', 'put'],
+  ]
+  for (const [dir, side] of order) {
+    const rows = holdings.filter(h => (h.direction ?? 'buy') === dir && h.side === side)
+    if (rows.length) {
+      const dirLabel = dir === 'sell' ? 'Sell' : 'Buy'
+      const sideLabel = side === 'put' ? 'Put' : 'Call'
+      groups.push({ label: `${dirLabel} ${sideLabel}`, rows })
+    }
+  }
+  const ungrouped = holdings.filter(h => !h.side)
+  if (ungrouped.length) groups.push({ label: '其他', rows: ungrouped })
+
+  return (
+    <div className="space-y-2 px-2 pb-2">
+      {groups.map(g => (
+        <div key={g.label}>
+          <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-fg-subtle">{g.label}</p>
+          {g.rows.map(row => {
+            const stockPrice = stockQuotes[row.symbol]?.price
+            const oKey = row.expiry && row.strike != null && row.side
+              ? `${row.symbol}:${row.expiry}:${row.strike}:${row.side}`
+              : null
+            const contractPrice = oKey != null ? optionQuotes[oKey] : undefined
+            const unitCost = row.costBasis           // premium per share paid/received
+            const totalCost = unitCost * row.qty * 100
+            const isSell = (row.direction ?? 'buy') === 'sell'
+            // P&L from live contract price; fall back to null if not available
+            let pnl: number | null = null
+            if (contractPrice != null) {
+              const perShare = isSell ? unitCost - contractPrice : contractPrice - unitCost
+              pnl = perShare * row.qty * 100
+            }
+            const pnlPct = pnl != null && totalCost > 0 ? (pnl / totalCost) * 100 : null
+            const pnlUp = (pnl ?? 0) >= 0
+            const label = `${row.symbol} $${row.strike} ${row.expiry ?? ''}`
+            return (
+              <div key={row.id}
+                onClick={() => navigate(`/detail/${row.symbol}`)}
+                className="cursor-pointer rounded-md px-1.5 py-1 hover:bg-bg-subtle transition-colors">
+                <div className="flex items-start justify-between gap-1 mb-0.5">
+                  <span className="font-mono text-[11px] font-semibold text-fg leading-tight truncate">{label}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-fg-subtle">{Number.isInteger(row.qty) ? row.qty : row.qty.toFixed(2)}张</span>
+                </div>
+                <div className="grid grid-cols-5 gap-x-1 text-right">
+                  <div>
+                    <div className="text-[9px] text-fg-subtle">成本</div>
+                    <div className="font-mono text-[10px] text-fg-muted">${fmtP(unitCost)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-fg-subtle">总成本</div>
+                    <div className="font-mono text-[10px] text-fg-muted">{totalCost >= 1000 ? '$' + (totalCost / 1000).toFixed(1) + 'K' : '$' + totalCost.toFixed(0)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-fg-subtle">正股价</div>
+                    <div className="font-mono text-[10px] text-fg-muted">{stockPrice != null ? '$' + fmtP(stockPrice) : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-fg-subtle">合约价</div>
+                    <div className="font-mono text-[10px] text-fg">{contractPrice != null ? '$' + fmtP(contractPrice) : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-fg-subtle">盈亏</div>
+                    <div className={`font-mono text-[10px] font-medium ${pnl != null ? (pnlUp ? 'text-accent-up' : 'text-accent-down') : 'text-fg-subtle'}`}>
+                      {pnl != null ? fmtM(pnl) : '—'}
+                    </div>
+                    {pnlPct != null && (
+                      <div className={`font-mono text-[9px] ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
+                        {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
 interface DailyPick { symbol: string; reason: string }
@@ -509,6 +714,42 @@ export function Dashboard() {
   const [refreshing, setRefreshing] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | null>(null)
   const picksUnsubRef = useRef<(() => void) | null>(null)
+  const [watchlistQuotes, setWatchlistQuotes] = useState<Record<string, { price: number; change: number; changePercent: number }>>({})
+  const watchlistSymsRef = useRef<string[]>([])
+  // option quotes keyed by "SYMBOL:EXPIRY:STRIKE:SIDE" → mid price
+  const [optionQuotes, setOptionQuotes] = useState<Record<string, number>>({})
+
+  async function refreshOptionQuotes(options: HoldingRow[]) {
+    if (!options.length) return
+    // Group by symbol+expiry to batch by chain
+    const groups = new Map<string, HoldingRow[]>()
+    for (const o of options) {
+      if (!o.expiry) continue
+      const k = `${o.symbol}:${o.expiry}`
+      if (!groups.has(k)) groups.set(k, [])
+      groups.get(k)!.push(o)
+    }
+    const updates: Record<string, number> = {}
+    await Promise.all([...groups.entries()].map(async ([k, rows]) => {
+      const [symbol, expiry] = k.split(':')
+      try {
+        const res = await window.api.market.optionsByDate(symbol, expiry)
+        for (const contract of res.data ?? []) {
+          const mid = contract.bid > 0 && contract.ask > 0
+            ? (contract.bid + contract.ask) / 2
+            : contract.lastPrice
+          const key = optionKey(symbol, expiry, contract.strike, contract.type)
+          updates[key] = mid
+        }
+      } catch { /* silent */ }
+      // Mark rows with no match as having no quote
+      for (const row of rows) {
+        if (row.strike == null || !row.side) continue
+        // already populated above if found
+      }
+    }))
+    setOptionQuotes(prev => ({ ...prev, ...updates }))
+  }
 
   async function loadIndexBars(syms: string[]) {
     const etHour = parseInt(new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/New_York' }), 10)
@@ -544,7 +785,8 @@ export function Dashboard() {
     const sectorSyms = sectorPicksRef.current.flatMap(s => s.stocks.map(st => st.symbol))
     const holdingSyms = holdingsRef.current.map(r => r.symbol)
     const screenerSyms = [...gainerSymsRef.current, ...loserSymsRef.current]
-    const allSyms = [...new Set([...pickSyms, ...sectorSyms, ...holdingSyms, ...screenerSyms])]
+    const watchSyms = watchlistSymsRef.current
+    const allSyms = [...new Set([...pickSyms, ...sectorSyms, ...holdingSyms, ...screenerSyms, ...watchSyms])]
     if (!allSyms.length) return
 
     try {
@@ -553,12 +795,31 @@ export function Dashboard() {
       for (const q of quotesRes.data ?? []) {
         qmap[q.symbol] = { price: q.price, change: q.change, changePercent: q.changePercent }
       }
+      // Also index by the original (un-normalized) symbol so BRK.B / BRKB lookups work.
+      function norm(s: string) {
+        const up = s.toUpperCase().trim()
+        const MAP: Record<string,string> = { BRKA:'BRK-A', BRKB:'BRK-B', BFA:'BF-A', BFB:'BF-B' }
+        if (MAP[up]) return MAP[up]
+        if (up.includes('.')) return up.replace('.', '-')
+        return up
+      }
+      for (const s of allSyms) {
+        const n = norm(s)
+        if (n !== s && qmap[n] && !qmap[s]) qmap[s] = qmap[n]
+      }
 
       // holdings
       if (holdingSyms.length) {
         const hq: Record<string, { price: number; change: number; changePercent: number }> = {}
         for (const s of holdingSyms) if (qmap[s]) hq[s] = qmap[s]
         setHoldingQuotes(hq)
+      }
+
+      // watchlist
+      if (watchSyms.length) {
+        const wq: Record<string, { price: number; change: number; changePercent: number }> = {}
+        for (const s of watchSyms) if (qmap[s]) wq[s] = qmap[s]
+        setWatchlistQuotes(wq)
       }
 
       // sector stock quotes
@@ -579,6 +840,11 @@ export function Dashboard() {
         })
       }
     } catch { /* silent */ }
+
+    // Option contract quotes — only during trading hours
+    if (isTradingHours()) {
+      void refreshOptionQuotes(holdingsRef.current.filter(r => r.type === 'option'))
+    }
   }
 
   // Load picks week/month history once (expensive — only on first picks load, not on every refresh)
@@ -593,6 +859,7 @@ export function Dashboard() {
       const isYesterday = etHour < 4
       const qmap: Record<string, number> = {}
       for (const q of quotesRes.data ?? []) qmap[q.symbol] = q.price
+      for (const s of symbols) { const n = s.includes('.') ? s.replace('.', '-') : s; if (n !== s && qmap[n] && !qmap[s]) qmap[s] = qmap[n] }
 
       setPicksQuotes(prev => {
         const next = { ...prev }
@@ -628,6 +895,9 @@ export function Dashboard() {
       const rows = await window.api.portfolio.list()
       setHoldings(rows)
       holdingsRef.current = rows
+      if (isTradingHours()) {
+        void refreshOptionQuotes(rows.filter(r => r.type === 'option'))
+      }
     } catch { /* silent */ }
   }
 
@@ -731,13 +1001,16 @@ export function Dashboard() {
       }
     }).catch(() => {})
 
-    // Timed refresh:盘中 5min / 非盘中 15min
-    // One call to refreshAllQuotes covers everything: holdings, picks, sector stocks, screener
-    const interval = isTradingHours() ? 5 * 60 * 1000 : 15 * 60 * 1000
-    const t = setInterval(() => {
-      void load(true)        // screener + indices + sparklines + refreshAllQuotes inside
-      void loadHoldings()    // re-sync holding list (imports may have changed)
-    }, interval)
+    // Timed refresh: 盘中 5min（刷涨跌榜列表 + 所有股价），非盘中 15min（仅刷股价）
+    const t = setInterval(async () => {
+      if (isTradingHours()) {
+        // Refresh screener list first, then quotes (screener syms may have changed)
+        await load(true)      // gainers/losers/indices + refreshAllQuotes inside
+      } else {
+        void refreshAllQuotes()
+      }
+      void loadHoldings()   // re-sync holding list (imports may have changed)
+    }, 5 * 60 * 1000)
 
     // Push from scheduler (cron auto-ran analysis)
     const unsub = window.api.insight.onDailyPicksUpdated(payload => {
@@ -762,10 +1035,72 @@ export function Dashboard() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { unlocked: holdingsVisible, unlock: authUnlock, lock: authLock } = useAuthStore()
+  const [showUnlock, setShowUnlock] = useState(false)
+  const [unlockInput, setUnlockInput] = useState('')
+  const [unlockError, setUnlockError] = useState(false)
+
+  const handleUnlock = useCallback(() => {
+    const ok = authUnlock(unlockInput)
+    if (ok) {
+      setShowUnlock(false)
+      setUnlockInput('')
+      setUnlockError(false)
+    } else {
+      setUnlockError(true)
+      setUnlockInput('')
+    }
+  }, [unlockInput, authUnlock])
+
+  const [holdingSort, setHoldingSort] = useState<{ key: HoldingSortKey; asc: boolean }>({ key: 'symbol', asc: true })
+
+  function toggleHoldingSort(k: HoldingSortKey) {
+    setHoldingSort(prev => prev.key === k ? { key: k, asc: !prev.asc } : { key: k, asc: false })
+  }
+
   const gainerList = gainers?.data ?? []
   const loserList = losers?.data ?? []
-  const stockHoldings = holdings.filter(h => h.type === 'stock')
-  const optionHoldings = holdings.filter(h => h.type === 'option')
+
+  const sortedHoldings = useMemo(() => {
+    const all = [...holdings]
+    const { key, asc } = holdingSort
+    all.sort((a, b) => {
+      let va: number | string = 0
+      let vb: number | string = 0
+      if (key === 'symbol') { va = a.symbol; vb = b.symbol }
+      else if (key === 'qty') { va = a.qty; vb = b.qty }
+      else if (key === 'mktVal') {
+        const mv = (h: HoldingRow) => { const q = holdingQuotes[h.symbol]; const m = h.type === 'option' ? 100 : 1; return q ? q.price * h.qty * m : -Infinity }
+        va = mv(a); vb = mv(b)
+      }
+      else if (key === 'costBasis') { va = a.costBasis; vb = b.costBasis }
+      else if (key === 'price') { va = holdingQuotes[a.symbol]?.price ?? -Infinity; vb = holdingQuotes[b.symbol]?.price ?? -Infinity }
+      else if (key === 'dayPct') { va = holdingQuotes[a.symbol]?.changePercent ?? -Infinity; vb = holdingQuotes[b.symbol]?.changePercent ?? -Infinity }
+      else if (key === 'dayPnl') {
+        const dp = (h: HoldingRow) => { const q = holdingQuotes[h.symbol]; return q ? q.change * h.qty * (h.type === 'option' ? 100 : 1) : -Infinity }
+        va = dp(a); vb = dp(b)
+      } else if (key === 'totalPnl') {
+        const pnl = (h: HoldingRow) => {
+          const q = holdingQuotes[h.symbol]; if (!q) return -Infinity
+          return (q.price - h.costBasis) * h.qty * (h.type === 'option' ? 100 : 1)
+        }
+        va = pnl(a); vb = pnl(b)
+      } else if (key === 'totalPnlPct') {
+        const pnlPct = (h: HoldingRow) => {
+          const q = holdingQuotes[h.symbol]; if (!q) return -Infinity
+          const cost = h.costBasis * h.qty * (h.type === 'option' ? 100 : 1)
+          return cost > 0 ? ((q.price - h.costBasis) / h.costBasis) * 100 : -Infinity
+        }
+        va = pnlPct(a); vb = pnlPct(b)
+      }
+      const cmp = typeof va === 'string' ? va.localeCompare(vb as string) : (va as number) - (vb as number)
+      return asc ? cmp : -cmp
+    })
+    return all
+  }, [holdings, holdingSort, holdingQuotes])
+
+  const stockHoldings = sortedHoldings.filter(h => h.type === 'stock')
+  const optionHoldings = sortedHoldings.filter(h => h.type === 'option')
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-bg">
@@ -775,12 +1110,48 @@ export function Dashboard() {
         <span className="text-sm font-semibold text-fg">市场总览</span>
         <div className="flex items-center gap-3" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           {lastRefresh && <span className="text-[11px] text-fg-subtle">{timeAgo(lastRefresh)}</span>}
+          <button
+            onClick={() => holdingsVisible ? authLock() : setShowUnlock(true)}
+            className="btn flex items-center gap-1.5 py-1 text-xs"
+            title={holdingsVisible ? '隐藏持仓' : '显示持仓'}
+          >
+            {holdingsVisible ? <EyeOff size={11} /> : <Eye size={11} />}
+            {holdingsVisible ? '隐藏持仓' : '持仓'}
+          </button>
           <button onClick={() => void load()} disabled={loading || refreshing} className="btn flex items-center gap-1.5 py-1 text-xs">
             <RefreshCw size={11} className={loading || refreshing ? 'animate-spin' : ''} />
             刷新
           </button>
         </div>
       </header>
+
+      {/* 解锁持仓 modal */}
+      {showUnlock && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+          onClick={() => { setShowUnlock(false); setUnlockInput(''); setUnlockError(false) }}>
+          <div className="w-72 rounded-xl border border-border bg-bg-elevated shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4">
+              <p className="mb-3 text-sm font-semibold text-fg">请输入密码</p>
+              <input
+                autoFocus
+                type="password"
+                value={unlockInput}
+                onChange={e => { setUnlockInput(e.target.value); setUnlockError(false) }}
+                onKeyDown={e => e.key === 'Enter' && handleUnlock()}
+                className={`input text-sm ${unlockError ? 'border-red-500/60 focus:border-red-500/60 focus:ring-red-500/20' : ''}`}
+                placeholder="密码"
+              />
+              {unlockError && <p className="mt-1.5 text-[11px] text-red-400">密码错误</p>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border px-5 py-3">
+              <button onClick={() => { setShowUnlock(false); setUnlockInput(''); setUnlockError(false) }}
+                className="btn text-xs">取消</button>
+              <button onClick={handleUnlock} className="btn btn-primary text-xs">确认</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Index bar */}
       {indices.length > 0 && (
@@ -830,8 +1201,8 @@ export function Dashboard() {
             {/* 持仓 + 自选 竖排，占 3/4 宽度 */}
             <div className="flex min-w-0 flex-[3] flex-col divide-y divide-border overflow-hidden">
 
-              {/* 持仓 */}
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              {/* 持仓（隐藏时不渲染） */}
+              {holdingsVisible && (<div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-fg">持仓</span>
@@ -861,44 +1232,70 @@ export function Dashboard() {
                     详情 <ChevronRight size={10} />
                   </button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-                  {holdings.length === 0 ? (
-                    <p className="py-4 text-center text-[11px] text-fg-subtle">暂无持仓，前往持仓页导入</p>
-                  ) : (
-                    <>
-                      <HoldingTableHeader />
-                      <div className="mt-0.5 space-y-0">
+                {holdings.length === 0 ? (
+                  <p className="py-4 text-center text-[11px] text-fg-subtle">暂无持仓，前往持仓页导入</p>
+                ) : (
+                  <>
+                    {/* 固定：总计行 + 表头 */}
+                    <div className="shrink-0 px-2 pb-1">
+                      <HoldingSummaryRow holdings={holdings} quotes={holdingQuotes} optionQuotes={optionQuotes} />
+                      <HoldingTableHeader sortKey={holdingSort.key} sortAsc={holdingSort.asc} onSort={toggleHoldingSort} />
+                    </div>
+                    {/* 滚动：仅股票持仓 */}
+                    <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+                      <div className="mt-0.5">
                         {stockHoldings.map(row => (
                           <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
                         ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>)}
+
+              {/* 下半：持仓可见时：期权（左宽）+ 自选（右窄）；隐藏时：自选独占 */}
+              <div className="flex min-h-0 flex-[1.2] divide-x divide-border overflow-hidden">
+
+                {/* 期权持仓（仅持仓可见时显示） */}
+                {holdingsVisible && (
+                  <div className="flex min-h-0 flex-[2] flex-col overflow-hidden">
+                    <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-fg">期权</span>
                         {optionHoldings.length > 0 && (
-                          <>
-                            <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-fg-subtle uppercase tracking-wider">期权</p>
-                            {optionHoldings.map(row => (
-                              <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
-                            ))}
-                          </>
+                          <span className="text-[10px] text-fg-subtle">{optionHoldings.length} 张</span>
                         )}
                       </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              {/* 自选股 */}
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <Star size={11} className="text-yellow-400" />
-                    <span className="text-xs font-semibold text-fg">自选股</span>
+                      <button onClick={() => navigate('/portfolio')}
+                        className="flex items-center gap-0.5 text-[10px] text-fg-subtle hover:text-fg-muted transition-colors">
+                        详情 <ChevronRight size={10} />
+                      </button>
+                    </div>
+                    <div className="min-h-0 flex-1 overflow-y-auto">
+                      <OptionPanel holdings={optionHoldings} stockQuotes={holdingQuotes} optionQuotes={optionQuotes} />
+                    </div>
                   </div>
-                  <button onClick={() => navigate('/watchlist')}
-                    className="flex items-center gap-0.5 text-[10px] text-fg-subtle hover:text-fg-muted transition-colors">
-                    管理 <ChevronRight size={10} />
-                  </button>
-                </div>
-                <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-                  <WatchlistSection embedded />
+                )}
+
+                {/* 自选股（始终显示，隐藏持仓时独占全宽） */}
+                <div className="flex min-h-0 flex-[1.5] flex-col overflow-hidden">
+                  <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Star size={11} className="text-yellow-400" />
+                      <span className="text-xs font-semibold text-fg">自选</span>
+                    </div>
+                    <button onClick={() => navigate('/watchlist')}
+                      className="flex items-center gap-0.5 text-[10px] text-fg-subtle hover:text-fg-muted transition-colors">
+                      管理 <ChevronRight size={10} />
+                    </button>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
+                    <WatchlistSection
+                      embedded
+                      externalQuotes={watchlistQuotes}
+                      onSymbolsChange={syms => { watchlistSymsRef.current = syms }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>

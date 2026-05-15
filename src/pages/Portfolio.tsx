@@ -20,6 +20,7 @@ interface EditState {
   strike: string
   expiry: string
   side: 'call' | 'put' | ''
+  direction: 'buy' | 'sell' | ''
 }
 
 function EditModal({ row, onSave, onClose }: {
@@ -35,6 +36,7 @@ function EditModal({ row, onSave, onClose }: {
     strike: row.strike != null ? String(row.strike) : '',
     expiry: row.expiry ?? '',
     side: row.side ?? '',
+    direction: row.direction ?? '',
   })
   const [saving, setSaving] = useState(false)
 
@@ -56,6 +58,7 @@ function EditModal({ row, onSave, onClose }: {
       strike: form.strike ? parseFloat(form.strike) : undefined,
       expiry: form.expiry || undefined,
       side: form.side || undefined,
+      direction: form.direction || undefined,
     }
     await onSave(row.id, fields)
     setSaving(false)
@@ -98,9 +101,18 @@ function EditModal({ row, onSave, onClose }: {
             </label>
           </div>
           {form.type === 'option' && (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <label className="flex flex-col gap-1">
-                <span className="text-[11px] text-fg-subtle">方向</span>
+                <span className="text-[11px] text-fg-subtle">买卖</span>
+                <select value={form.direction} onChange={e => set('direction', e.target.value)}
+                  className="input">
+                  <option value="">—</option>
+                  <option value="buy">Buy</option>
+                  <option value="sell">Sell</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-fg-subtle">类型</span>
                 <select value={form.side} onChange={e => set('side', e.target.value)}
                   className="input">
                   <option value="">—</option>
@@ -176,7 +188,7 @@ export function Portfolio() {
     return () => clearInterval(t)
   }, [holdings, setQuotes])
 
-  const handleImport = useCallback(async () => {
+  const handleImport = useCallback(async (hint: 'stock' | 'option') => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/png,image/jpeg,image/webp,.pdf'
@@ -185,7 +197,7 @@ export function Portfolio() {
       if (!file) return
       setImporting(true)
       try {
-        const records = await window.api.portfolio.import(file.path ?? (file as File & { path?: string }).path ?? '')
+        const records = await window.api.portfolio.import(file.path ?? (file as File & { path?: string }).path ?? '', hint)
         setImportPreview(records)
       } catch (e) {
         toast.error(`识别失败: ${(e as Error).message?.slice(0, 80)}`, '导入错误')
@@ -256,9 +268,13 @@ export function Portfolio() {
             <Pencil size={13} />
             手动添加
           </button>
-          <button onClick={handleImport} disabled={importing} className="btn btn-primary flex items-center gap-1.5">
+          <button onClick={() => handleImport('stock')} disabled={importing} className="btn flex items-center gap-1.5 text-xs">
             <Upload size={13} />
-            {importing ? '识别中…' : '导入截图 / PDF'}
+            {importing ? '识别中…' : '导入股票'}
+          </button>
+          <button onClick={() => handleImport('option')} disabled={importing} className="btn btn-primary flex items-center gap-1.5 text-xs">
+            <Upload size={13} />
+            {importing ? '识别中…' : '导入期权'}
           </button>
         </div>
       </header>
@@ -401,9 +417,13 @@ export function Portfolio() {
                   <Pencil size={14} />
                   手动添加
                 </button>
-                <button onClick={handleImport} className="btn btn-primary flex items-center gap-2">
+                <button onClick={() => handleImport('stock')} className="btn flex items-center gap-2">
                   <Upload size={14} />
-                  导入截图 / PDF
+                  导入股票
+                </button>
+                <button onClick={() => handleImport('option')} className="btn btn-primary flex items-center gap-2">
+                  <Upload size={14} />
+                  导入期权
                 </button>
               </div>
               <p className="text-xs text-fg-subtle">支持 Robinhood、Webull、TD 等主流券商截图</p>

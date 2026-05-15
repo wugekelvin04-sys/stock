@@ -23,6 +23,12 @@
   .btn-primary {
     @apply border-accent/40 bg-accent/15 text-accent hover:bg-accent/25;
   }
+  .input {
+    @apply w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-sm text-fg
+           placeholder:text-fg-subtle
+           focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/20
+           transition-colors appearance-none;
+  }
   .kbd {
     @apply inline-flex items-center rounded border border-border bg-bg-subtle px-1.5 py-0.5 text-[10px] font-mono text-fg-muted;
   }

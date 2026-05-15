@@ -6,6 +6,7 @@ import { registerAnalysisHandlers } from './analysis'
 import { registerInsightHandlers } from './insight'
 import { registerWatchlistHandlers } from './watchlist'
 import { registerChatHandlers } from './chat'
+import { registerStockHandlers } from './stock'
 
 export function registerIpcHandlers() {
   registerMarketHandlers()
@@ -14,6 +15,7 @@ export function registerIpcHandlers() {
   registerInsightHandlers()
   registerWatchlistHandlers()
   registerChatHandlers()
+  registerStockHandlers()
   ipcMain.handle('app:ping', async (_e, msg: string) => `pong: ${msg ?? ''}`)
 
   ipcMain.handle('claude:info', async () => detectClaude())

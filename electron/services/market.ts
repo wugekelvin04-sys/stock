@@ -16,6 +16,21 @@ import { yahooLimiter, finnhubLimiter } from './ratelimit'
 
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? ''
 
+// ── Symbol normalization ──────────────────────────────────────────────────────
+// Yahoo Finance uses BRK-B / BF-B style; users often type BRKB / BFB / BRK.B
+const DOTDASH_MAP: Record<string, string> = {
+  'BRKA': 'BRK-A', 'BRKB': 'BRK-B',
+  'BFA':  'BF-A',  'BFB':  'BF-B',
+}
+function normalizeSymbol(s: string): string {
+  const up = s.toUpperCase().trim()
+  if (DOTDASH_MAP[up]) return DOTDASH_MAP[up]
+  // BRK.B → BRK-B
+  if (up.includes('.')) return up.replace('.', '-')
+  return up
+}
+function normalizeSymbols(syms: string[]): string[] { return syms.map(normalizeSymbol) }
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface Quote {
@@ -113,11 +128,12 @@ export interface CachedResult<T> {
 // ── Quotes ────────────────────────────────────────────────────────────────────
 
 export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]>> {
-  const key = `quotes:${symbols.sort().join(',')}`
+  const normalized = normalizeSymbols(symbols)
+  const key = `quotes:${normalized.sort().join(',')}`
   return withCache(key, TTL.QUOTE, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const results: any = await yahooFinance.quote(symbols, {}, { validateResult: false })
+    const results: any = await yahooFinance.quote(normalized, {}, { validateResult: false })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const arr: any[] = Array.isArray(results) ? results : [results]
     return arr.map((q) => ({
@@ -157,6 +173,7 @@ export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]
 export type HistoryPeriod = '1d' | '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y'
 
 export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'): Promise<CachedResult<HistoryBar[]>> {
+  symbol = normalizeSymbol(symbol)
   const key = `history:${symbol}:${period}`
   // Historical bars for closed periods are immutable — cache much longer.
   // Only the period that includes today's unclosed bar needs a short TTL.

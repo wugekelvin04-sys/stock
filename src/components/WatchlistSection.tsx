@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import type { WatchGroup, WatchItem } from '../stores/watchlist'
 
-interface QuoteSnap { price: number; changePercent: number; change: number }
+export interface QuoteSnap { price: number; changePercent: number; change: number }
 
 function fmt(n: number, d = 2) {
   return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -26,14 +26,24 @@ function Spark({ bars, up }: { bars: number[]; up: boolean }) {
   )
 }
 
-export function WatchlistSection({ embedded }: { embedded?: boolean }) {
+interface Props {
+  embedded?: boolean
+  // When provided, Dashboard drives quote fetching (unified refresh).
+  // When absent, component fetches its own quotes (standalone mode).
+  externalQuotes?: Record<string, QuoteSnap>
+  onSymbolsChange?: (symbols: string[]) => void
+}
+
+export function WatchlistSection({ embedded, externalQuotes, onSymbolsChange }: Props) {
   const navigate = useNavigate()
   const [groups, setGroups] = useState<WatchGroup[]>([])
   const [items, setItems] = useState<Record<number, WatchItem[]>>({})
-  const [quotes, setQuotes] = useState<Record<string, QuoteSnap>>({})
+  const [ownQuotes, setOwnQuotes] = useState<Record<string, QuoteSnap>>({})
   const [sparks, setSparks] = useState<Record<string, number[]>>({})
 
-  const loadData = async () => {
+  const quotes = externalQuotes ?? ownQuotes
+
+  const loadData = useCallback(async () => {
     const gs = await window.api.watchlist.listGroups()
     if (gs.length === 0) { setGroups([]); return }
     setGroups(gs)
@@ -48,17 +58,19 @@ export function WatchlistSection({ embedded }: { embedded?: boolean }) {
     setItems(allItems)
 
     const syms = [...allSymbols]
-    if (!syms.length) return
+    onSymbolsChange?.(syms)
 
-    // quotes
-    try {
-      const res = await window.api.market.quotes(syms)
-      const snap: Record<string, QuoteSnap> = {}
-      for (const q of res.data ?? []) {
-        snap[q.symbol] = { price: q.price, changePercent: q.changePercent, change: q.change }
-      }
-      setQuotes(snap)
-    } catch { /* silent */ }
+    // In standalone mode (no external quotes), fetch own quotes
+    if (!externalQuotes) {
+      try {
+        const res = await window.api.market.quotes(syms)
+        const snap: Record<string, QuoteSnap> = {}
+        for (const q of res.data ?? []) {
+          snap[q.symbol] = { price: q.price, changePercent: q.changePercent, change: q.change }
+        }
+        setOwnQuotes(snap)
+      } catch { /* silent */ }
+    }
 
     // sparklines (fire-and-forget per symbol)
     for (const sym of syms) {
@@ -68,12 +80,21 @@ export function WatchlistSection({ embedded }: { embedded?: boolean }) {
         }
       }).catch(() => {})
     }
-  }
+  }, [externalQuotes, onSymbolsChange])
 
   useEffect(() => {
     void loadData()
-    const t = setInterval(loadData, 5 * 60 * 1000)
-    return () => clearInterval(t)
+    // Only refresh in standalone mode; Dashboard handles timing when using external quotes
+    if (!externalQuotes) {
+      const t = setInterval(loadData, 5 * 60 * 1000)
+      return () => clearInterval(t)
+    }
+  }, [loadData, externalQuotes])
+
+  // When external quotes arrive for the first time, still load groups/items
+  useEffect(() => {
+    if (externalQuotes) void loadData()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const filledGroups = groups.filter(g => (items[g.id]?.length ?? 0) > 0)
@@ -101,7 +122,7 @@ export function WatchlistSection({ embedded }: { embedded?: boolean }) {
                     className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-bg-subtle transition-colors"
                   >
                     {/* symbol */}
-                    <span className="w-16 shrink-0 font-mono text-xs font-semibold text-fg">{it.symbol}</span>
+                    <span className="w-14 shrink-0 font-mono text-xs font-semibold text-fg truncate">{it.symbol}</span>
 
                     {/* sparkline */}
                     {bars && bars.length > 1
@@ -117,7 +138,7 @@ export function WatchlistSection({ embedded }: { embedded?: boolean }) {
                             {q.change >= 0 ? '+' : ''}{fmt(q.change)}
                           </div>
                         </div>
-                        <div className={`w-16 text-right font-mono text-xs font-medium ${up ? 'text-accent-up' : 'text-accent-down'}`}>
+                        <div className={`w-14 text-right font-mono text-xs font-medium ${up ? 'text-accent-up' : 'text-accent-down'}`}>
                           <div className="flex items-center justify-end gap-0.5">
                             {up ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
                             {up ? '+' : ''}{fmt(q.changePercent)}%

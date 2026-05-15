@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, shell } from 'electron'
 import type { HistoryPeriod, Quote, HistoryBar, OptionContract, SearchResult, ScreenerItem, NewsItem, CachedResult, SectorItem, IndexItem } from './services/market'
 import type { SectorPick } from './services/db'
-import type { HoldingRecord } from './services/parser'
+import type { HoldingRecord, ImportHint } from './services/parser'
 import type { HoldingRow } from './services/db'
 import type { AnalysisContext, AnalysisChunk, AnalysisMode, ChatMessage } from './services/claude'
 
@@ -30,7 +30,7 @@ const api = {
 
   // ── Portfolio ──────────────────────────────────────────────────────────────
   portfolio: {
-    import: (filePath: string) => ipcRenderer.invoke('portfolio:import', filePath) as Promise<HoldingRecord[]>,
+    import: (filePath: string, hint?: ImportHint) => ipcRenderer.invoke('portfolio:import', filePath, hint) as Promise<HoldingRecord[]>,
     save: (records: HoldingRecord[]) => ipcRenderer.invoke('portfolio:save', records) as Promise<{ ok: boolean }>,
     list: () => ipcRenderer.invoke('portfolio:list') as Promise<HoldingRow[]>,
     update: (id: number, fields: Partial<import('./services/parser').HoldingRecord>) => ipcRenderer.invoke('portfolio:update', id, fields) as Promise<{ ok: boolean }>,
@@ -116,6 +116,56 @@ const api = {
       const handler = (_e: Electron.IpcRendererEvent, chunk: AnalysisChunk) => cb(chunk)
       ipcRenderer.on('chat:chunk', handler)
       return () => ipcRenderer.off('chat:chunk', handler)
+    },
+  },
+
+  // ── Stock info ─────────────────────────────────────────────────────────────
+  stock: {
+    profileGet: (symbol: string) => ipcRenderer.invoke('stock:profile:get', symbol) as Promise<import('./services/db').StockProfile | null>,
+    profileGenerate: (symbol: string) => ipcRenderer.invoke('stock:profile:generate', symbol) as Promise<{ sessionId: string }>,
+    catalystGet: (symbol: string) => ipcRenderer.invoke('stock:catalyst:get', symbol) as Promise<import('./services/db').StockCatalyst | null>,
+    catalystGenerate: (symbol: string) => ipcRenderer.invoke('stock:catalyst:generate', symbol) as Promise<{ sessionId: string }>,
+    onProfileChunk: (cb: (chunk: import('./services/claude').AnalysisChunk) => void) => {
+      ipcRenderer.removeAllListeners('stock:profile:chunk')
+      const h = (_e: Electron.IpcRendererEvent, chunk: import('./services/claude').AnalysisChunk) => cb(chunk)
+      ipcRenderer.on('stock:profile:chunk', h)
+      return () => ipcRenderer.removeAllListeners('stock:profile:chunk')
+    },
+    onCatalystChunk: (cb: (chunk: import('./services/claude').AnalysisChunk) => void) => {
+      ipcRenderer.removeAllListeners('stock:catalyst:chunk')
+      const h = (_e: Electron.IpcRendererEvent, chunk: import('./services/claude').AnalysisChunk) => cb(chunk)
+      ipcRenderer.on('stock:catalyst:chunk', h)
+      return () => ipcRenderer.removeAllListeners('stock:catalyst:chunk')
+    },
+    ratingsGet: (symbol: string) => ipcRenderer.invoke('stock:ratings:get', symbol) as Promise<import('./services/db').StockRatings | null>,
+    ratingsGenerate: (symbol: string) => ipcRenderer.invoke('stock:ratings:generate', symbol) as Promise<{ sessionId: string }>,
+    onRatingsChunk: (cb: (chunk: import('./services/claude').AnalysisChunk) => void) => {
+      ipcRenderer.removeAllListeners('stock:ratings:chunk')
+      const h = (_e: Electron.IpcRendererEvent, chunk: import('./services/claude').AnalysisChunk) => cb(chunk)
+      ipcRenderer.on('stock:ratings:chunk', h)
+      return () => ipcRenderer.removeAllListeners('stock:ratings:chunk')
+    },
+    earningsGet: (symbol: string) => ipcRenderer.invoke('stock:earnings:get', symbol) as Promise<import('./services/db').StockEarnings | null>,
+    earningsGenerate: (symbol: string) => ipcRenderer.invoke('stock:earnings:generate', symbol) as Promise<{ sessionId: string }>,
+    onEarningsChunk: (cb: (chunk: import('./services/claude').AnalysisChunk) => void) => {
+      ipcRenderer.removeAllListeners('stock:earnings:chunk')
+      const h = (_e: Electron.IpcRendererEvent, chunk: import('./services/claude').AnalysisChunk) => cb(chunk)
+      ipcRenderer.on('stock:earnings:chunk', h)
+      return () => ipcRenderer.removeAllListeners('stock:earnings:chunk')
+    },
+  },
+
+  // ── Prefetch tasks ─────────────────────────────────────────────────────────
+  prefetch: {
+    onStatus: (cb: (s: { running: boolean; total: number; done: number }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, s: { running: boolean; total: number; done: number }) => cb(s)
+      ipcRenderer.on('prefetch:status', h)
+      return () => ipcRenderer.off('prefetch:status', h)
+    },
+    onProgress: (cb: (p: { symbol: string; type: string; status: string }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, p: { symbol: string; type: string; status: string }) => cb(p)
+      ipcRenderer.on('prefetch:progress', h)
+      return () => ipcRenderer.off('prefetch:progress', h)
     },
   },
 

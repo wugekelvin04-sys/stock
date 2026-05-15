@@ -4,8 +4,9 @@ import { BrowserWindow, Notification, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import os from 'node:os'
 import { getClaudeBinPath } from './claudeHelper'
-import { saveDailyPicks, saveInsight, listHoldings, saveSectorPicks, getLatestSectorPicks } from './db'
+import { saveDailyPicks, saveInsight, listHoldings, saveSectorPicks, getLatestSectorPicks, getLatestDailyPicks, listWatchGroups, listWatchItems, cacheGet } from './db'
 import type { DailyPick, SectorPick } from './db'
+import { prefetchSymbol } from '../ipc/stock'
 
 // Tray reference for status updates
 let _tray: Tray | null = null
@@ -261,6 +262,65 @@ export function updateTrayStatus() {
   _tray.setToolTip(isOpen ? 'Stock Desk · 市场开盘中' : 'Stock Desk · 市场休市')
 }
 
+// ── Prefetch AI data for all tracked symbols ──────────────────────────────────
+
+async function runPrefetch() {
+  const symbols = new Set<string>()
+
+  // 持仓
+  for (const h of listHoldings()) {
+    if (h.type === 'stock') symbols.add(h.symbol.toUpperCase())
+  }
+
+  // 自选
+  for (const group of listWatchGroups()) {
+    for (const item of listWatchItems(group.id)) {
+      symbols.add(item.symbol.toUpperCase())
+    }
+  }
+
+  // 涨幅榜 / 跌幅榜（从 quote_cache 读最近缓存）
+  for (const cacheKey of ['screener:gainers', 'screener:losers']) {
+    const cached = cacheGet(cacheKey) as { symbol: string }[] | null
+    if (cached) cached.forEach(s => symbols.add(s.symbol.toUpperCase()))
+  }
+
+  // 机会榜 daily picks
+  const picks = getLatestDailyPicks()
+  if (picks) picks.picks.forEach(p => symbols.add(p.symbol.toUpperCase()))
+
+  // 板块推荐股票
+  const sectorPicks = getLatestSectorPicks()
+  if (sectorPicks) {
+    sectorPicks.picks.forEach(sp => sp.stocks.forEach(s => symbols.add(s.symbol.toUpperCase())))
+  }
+
+  if (!symbols.size) return
+  console.log(`[prefetch] Prefetching AI data for ${symbols.size} symbols: ${[...symbols].join(', ')}`)
+
+  const broadcast = (event: string, payload: unknown) =>
+    BrowserWindow.getAllWindows().forEach(w => w.webContents.send(event, payload))
+
+  broadcast('prefetch:status', { running: true, total: symbols.size, done: 0 })
+  let doneCount = 0
+
+  // 逐个串行预取，避免并发过多 Claude 进程
+  for (const sym of symbols) {
+    try {
+      await prefetchSymbol(sym, undefined, (p) => {
+        broadcast('prefetch:progress', p)
+      })
+    } catch (e) {
+      console.warn(`[prefetch] ${sym} failed:`, (e as Error).message)
+    }
+    doneCount++
+    broadcast('prefetch:status', { running: true, total: symbols.size, done: doneCount })
+  }
+
+  broadcast('prefetch:status', { running: false, total: symbols.size, done: doneCount })
+  console.log('[prefetch] Done.')
+}
+
 // ── Public scheduler API ───────────────────────────────────────────────────────
 
 let started = false
@@ -293,6 +353,11 @@ export async function startScheduler() {
     const { hour, minute } = nowInET()
     if (hour === 9 && minute === 30) await runHourlyInsight(claudeBin)
   })
+
+  // 每 10 分钟静默预取所有关注 symbol 的 AI 数据
+  cron.schedule('*/10 * * * *', () => void runPrefetch())
+  // 启动时也跑一次
+  setTimeout(() => void runPrefetch(), 30_000)
 
   console.log('[scheduler] Started. Monitoring NYSE trading hours.')
 }

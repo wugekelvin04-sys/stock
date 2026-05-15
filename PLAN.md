@@ -1,207 +1,206 @@
 # Stock Desk 开发计划
 
-> 更新日期:2026-05-14
+> 更新日期: 2026-05-15
 
-## 技术栈
+## 项目定位
+
+Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓、自选、期权链、新闻、AI 分析和定时市场洞察放在一个 Electron 应用里，主要面向需要每天快速查看市场、持仓风险和交易机会的个人用户。
+
+---
+
+## 当前技术栈
 
 | 层 | 技术 |
 |---|---|
 | 桌面壳 | Electron 31 |
 | 渲染层 | React 18 + TypeScript + Vite 5 |
-| UI 样式 | Tailwind CSS 3(暗色主题) |
-| 图表 | lightweight-charts + Recharts(待接入) |
-| 状态管理 | Zustand + TanStack Query(待接入) |
-| 本地存储 | better-sqlite3(待接入) |
-| 数据源 | yahoo-finance2(主) + Finnhub(备用,新闻) |
-| AI 分析 | claude CLI(`-p --output-format stream-json --resume`) |
-| 多模态 OCR | 截图/PDF → base64 → claude vision |
+| UI 样式 | Tailwind CSS 3 暗色主题 |
+| 图标 | lucide-react |
+| 图表 | lightweight-charts + Recharts |
+| 状态管理 | Zustand + TanStack Query |
+| 本地存储 | better-sqlite3 |
+| 行情数据 | yahoo-finance2 |
+| 新闻数据 | Finnhub 可选 + Yahoo fallback |
+| AI 分析 | Claude CLI `stream-json` |
+| 多模态导入 | 截图/PDF -> base64 image -> Claude vision |
+| 定时任务 | node-cron + date-holidays |
 
 ---
 
-## 全局快捷键
+## 当前架构
 
-| 快捷键 | 作用 |
+| 模块 | 文件 | 责任 |
+|---|---|---|
+| Electron 主进程 | `electron/main.ts` | 窗口、Tray、全局快捷键、单例锁、scheduler |
+| 安全桥 | `electron/preload.ts` | 暴露 `window.api`，隔离 renderer 和 main |
+| IPC 注册 | `electron/ipc/index.ts` | 聚合 market、portfolio、analysis、insight、watchlist、chat、stock handler |
+| 行情服务 | `electron/services/market.ts` | quote、history、intraday、options、search、screeners、indices、sectors、news |
+| 本地数据库 | `electron/services/db.ts` | SQLite migration 和 CRUD |
+| 缓存层 | `electron/services/cache.ts` | TTL cache + stale fallback |
+| 限流 | `electron/services/ratelimit.ts` | Yahoo/Finnhub token bucket |
+| Claude 服务 | `electron/services/claude.ts` | 个股分析、聊天、通用流式 helper |
+| 持仓导入 | `electron/services/parser.ts` | 图片/PDF 转 Claude vision，解析持仓 JSON |
+| 调度器 | `electron/services/scheduler.ts` | 每日机会榜、板块机会、整点 insight、AI 资料预取 |
+
+---
+
+## 数据表
+
+| 表 | 用途 |
 |---|---|
-| `Cmd+Opt+\` (macOS) / `Ctrl+Alt+\` (Win) | 全局切换窗口显示/隐藏 |
-| `Cmd+K` | 应用内股票搜索(M4 实现) |
-| `Cmd+W` | 隐藏窗口(不退出,保持后台 scheduler) |
-| `Cmd+Q` | 真正退出 |
+| `holdings` | 股票和期权持仓 |
+| `quote_cache` | 行情、榜单、新闻、期权链等 TTL 缓存 |
+| `daily_picks` | 每日 AI 机会股 |
+| `sector_picks` | 每日 AI 板块机会 |
+| `insights` | 整点持仓 insight |
+| `search_history` | 搜索历史 |
+| `settings` | 本地设置 |
+| `watchlist_groups` | 自选分组 |
+| `watchlist_items` | 自选股票 |
+| `stock_profile` | 个股长期 profile |
+| `stock_catalyst` | 个股每日催化剂 |
+| `stock_ratings` | 个股评级摘要 |
+| `stock_earnings` | 个股财报摘要 |
+
+---
+
+## 页面与功能
+
+| 页面 | 状态 | 说明 |
+|---|---|---|
+| 市场首页 `Dashboard` | 已实现 | 指数、榜单、板块、AI 机会、内嵌 Claude 聊天 |
+| 持仓 `Portfolio` | 已实现 | 股票/期权持仓列表、手动维护、截图/PDF 导入 |
+| 个股详情 `Detail` | 已实现 | 报价、K 线、新闻、期权链、AI 分析、收藏 |
+| 自选 `Watchlist` | 已实现 | 分组管理和 ticker 管理 |
+| Claude `Chat` | 已实现 | 独立流式聊天页 |
+| 设置 `Settings` | 部分实现 | 应用信息、Claude 检测等基础设置 |
 
 ---
 
 ## 数据刷新策略
 
-| 数据类型 | 频率 | 说明 |
+| 数据类型 | TTL / 频率 | 说明 |
 |---|---|---|
-| 持仓报价 | 5 分钟/次(仅开盘时段) | 收盘后停止 |
-| K 线 | 按需拉取 | 默认日 K,可切 5min |
-| 涨跌榜单 | 15 分钟缓存 | 带 TTL 显示"更新于 X 分钟前" |
-| 期权链 | 30 分钟缓存 | 详情页打开时按需拉 |
-| 新闻 | 30 分钟缓存 | 分析时批量拉 |
-| 机会榜 | 每日 09:00 ET | claude 筛选一次,全天不变 |
-| 整点 insight | 每小时(09:30-16:00 ET) | 工作日开盘期间 |
+| quote | 5 分钟 | `TTL.QUOTE` |
+| screener | 15 分钟 | 涨幅榜、跌幅榜、指数、板块 |
+| option chain | 30 分钟 | 未来到期链短缓存，已到期链长缓存 |
+| news | 1 小时 | Finnhub 或 Yahoo fallback |
+| search | 1 小时 | ticker 搜索结果 |
+| history 1d | 5 分钟 | 日内分钟线 |
+| history 1mo | 盘中 4 小时，收盘后长缓存 | 包含今日 bar |
+| history 3mo+ | 长缓存 | 已收盘历史数据视为不可变 |
+| daily picks | 每个交易日 09:00 ET | Claude 生成 |
+| hourly insight | 交易日 09:30 和 10:00-16:00 ET | 有持仓时生成 |
+| AI prefetch | 每 10 分钟 | 为持仓、自选、榜单、机会股预取 AI 资料 |
 
 ---
 
-## 功能列表
+## 里程碑状态
 
-| # | 功能 | 里程碑 | 状态 |
-|---|---|---|---|
-| 1 | 截图/PDF 导入持仓(claude vision → 结构化 JSON) | M3 | 待开发 |
-| 2 | 持仓/期权实时价格与趋势(日 K + 成本线 + sparkline) | M4/M5 | 待开发 |
-| 3 | 一键 AI 分析(涨跌归因/买卖理由/利好利空/期权仓位建议) | M5 | 待开发 |
-| 4 | 任意股票搜索(`Cmd+K`,支持 ticker/公司名) | M4 | 待开发 |
-| 5 | 主界面三榜单(涨幅/跌幅/AI 机会榜) | M4 | 待开发 |
-| 6 | 整点持仓 insight(开盘期间每小时,系统通知) | M6 | 待开发 |
-| 7 | 全局快捷键显示/隐藏 + Tray + 关窗不退出 | M1 | **已完成** |
+### M1 - 桌面基础设施
 
----
+- [x] Electron + Vite + React + TypeScript
+- [x] 单例锁，防止双开
+- [x] 关闭窗口时隐藏，Tray 保持后台运行
+- [x] 全局快捷键 `Cmd+Opt+\` / `Ctrl+Alt+\`
+- [x] preload + contextBridge 安全桥
+- [x] Claude CLI 探测
 
-## 里程碑详情
+### M2 - 数据层
 
-### M1 — 脚手架 ✅ 已完成 (commit `da80046`)
+- [x] Yahoo quote/history/options/search/screener
+- [x] 指数和板块 ETF 数据
+- [x] Finnhub 新闻，可回退 Yahoo news
+- [x] SQLite cache
+- [x] TTL 和 stale fallback
+- [x] Yahoo/Finnhub 限流
+- [x] market IPC 暴露
 
-- [x] Electron + Vite + React 18 + TypeScript 跑通
-- [x] 全局快捷键 `Cmd+Opt+\` 切换显示/隐藏
-- [x] 单例锁(防双开)+ 关窗变隐藏
-- [x] Tray 图标 + 右键菜单
-- [x] IPC contextIsolation 安全桥 (preload + contextBridge)
-- [x] claude CLI 自动探测(多候选路径)
-- [x] Tailwind 暗色主题
-- [x] 推送 GitHub: https://github.com/wugekelvin04-sys/stock
+### M3 - 持仓导入
 
----
+- [x] 图片持仓导入
+- [x] PDF 转图片导入
+- [x] 股票/期权/自动识别 prompt
+- [x] 结构化 JSON 解析
+- [x] 持仓保存、列表、更新、删除、清空
+- [x] 持仓页面导入预览和确认
 
-### M2 — 数据层(Yahoo + Finnhub + 缓存)
+### M4 - 市场首页、持仓、自选、搜索
 
-**目标**:所有行情数据都能拿到,限流安全,缓存透明。
+- [x] 市场首页指数卡片
+- [x] 涨幅榜 / 跌幅榜
+- [x] 每日 AI 机会榜
+- [x] 板块机会榜
+- [x] 持仓总览和明细
+- [x] 自选分组
+- [x] `Cmd+K` 全局搜索
+- [x] 搜索跳转详情页
 
-- [ ] 安装 `yahoo-finance2` + `axios`
-- [ ] `electron/services/market.ts`:
-  - `getQuotes(symbols[])` — 批量报价
-  - `getHistory(symbol, period)` — 日 K/周 K 历史
-  - `getOptionChain(symbol)` — 期权链
-  - `search(query)` — ticker 搜索
-  - `getGainers() / getLosers()` — 涨跌榜
-- [ ] `electron/services/cache.ts`:
-  - SQLite 表 `quote_cache(symbol, type, data_json, fetched_at, ttl_seconds)`
-  - 读:先查缓存,命中且未过期直接返回
-  - 写:网络成功后写入
-  - TTL 分级:报价 300s / 榜单 900s / 期权链 1800s / 新闻 1800s / 基本面 86400s
-- [ ] `electron/services/ratelimit.ts`:简单令牌桶,Yahoo 自限 2 req/s,Finnhub 1 req/s
-- [ ] IPC 暴露 `market:quotes` / `market:history` / `market:search`
-- [ ] UI 显示"数据更新于 X 分钟前"
+### M5 - 个股详情和 AI 分析
 
----
+- [x] 分时和历史 K 线
+- [x] 报价、涨跌幅、缓存标识
+- [x] 新闻列表
+- [x] 期权链
+- [x] 收藏到自选
+- [x] 流式 AI 分析
+- [x] profile / catalyst / ratings / earnings 面板
 
-### M3 — 持仓导入(截图/PDF → 持仓)
+### M6 - 调度和自动洞察
 
-**目标**:上传一张券商截图或 PDF,自动识别出持仓表格。
+- [x] 每日 09:00 ET AI 机会榜
+- [x] 板块机会生成
+- [x] 交易时段整点持仓 insight
+- [x] 系统通知
+- [x] scheduler 推送 renderer toast
+- [x] Tray 市场开盘状态
+- [x] 关注股票 AI 资料后台预取
+- [x] 后台任务面板
 
-- [ ] 安装 `pdfjs-dist`
-- [ ] `electron/services/parser.ts`:
-  - PDF 页 → canvas → base64 PNG
-  - 图片文件直接 base64
-  - 调 `claude -p <prompt> --image <base64>` 提取持仓 JSON
-  - 输出结构:`[{ symbol, type, qty, costBasis, strike?, expiry?, side?, exchange? }]`
-- [ ] `electron/services/db.ts`:
-  - SQLite 表 `holdings` / `options_positions` / `search_history` / `daily_picks` / `insights`
-  - CRUD 封装
-- [ ] IPC `portfolio:import` / `portfolio:list` / `portfolio:delete`
-- [ ] `src/pages/Import.tsx`:拖拽上传区 + 识别结果预览 + 确认入库
+### M7 - 打磨与稳定性
 
----
-
-### M4 — 主界面(三榜单 + 持仓列表 + 全局搜索)
-
-**目标**:打开 app 就能看到市场全局和自己的仓位。
-
-- [ ] 安装 `zustand` + `@tanstack/react-query`
-- [ ] `src/pages/Dashboard.tsx`:
-  - 涨幅榜 Top 10(Yahoo screener `day_gainers`)
-  - 跌幅榜 Top 10(Yahoo screener `day_losers`)
-  - 机会榜 Top 10(读 `daily_picks` 表,开盘前 claude 筛一次)
-  - 每行:ticker / 公司名 / 现价 / 当日涨跌% / 5日涨跌%
-- [ ] `src/pages/Portfolio.tsx`:
-  - 持仓列表:symbol / 持仓量 / 成本价 / 现价 / 盈亏% / 7日 sparkline
-  - 期权列表:symbol / strike / expiry / 方向 / 现价 / IV
-  - 总览卡片:总市值 / 总盈亏 / 当日变化
-- [ ] `src/components/SearchBar.tsx`:
-  - `Cmd+K` 全局唤起
-  - yahoo-finance2.search 防抖 300ms
-  - 结果分组 Stocks / ETFs
-  - 点击跳转详情页
-  - 历史记录持久化
+- [x] 基础 toast
+- [x] 简单权限保护持仓页
+- [x] 部分空状态
+- [ ] React ErrorBoundary
+- [ ] 设置页完善：快捷键、数据源、缓存清理
+- [ ] 导入失败和 Claude 登录态引导优化
+- [ ] UI 响应式和布局细节继续打磨
+- [ ] e2e/smoke test
+- [ ] 打包发布流程
 
 ---
 
-### M5 — 详情页(趋势图 + 流式 AI 分析)
+## Claude CLI 会话策略
 
-**目标**:点任意一支股票/期权,看走势和 AI 一键分析。
-
-- [ ] 安装 `lightweight-charts`
-- [ ] `src/pages/Detail.tsx`:
-  - 日 K 趋势图 + 20/50 日均线 + 成本线(持仓才有)
-  - 可切周期:1M / 3M / 6M / 1Y
-  - 基本面快照:PE / 市值 / 52周高低
-  - "一键分析"按钮
-- [ ] `electron/services/claude.ts` 扩展:
-  - `analyzeStock(symbol, context)`:spawn claude `--resume analysis-<symbol> --output-format stream-json`
-  - 解析 NDJSON 流,逐 token emit 给渲染层
-  - Prompt 模板:当日涨跌归因 / 买入理由 / 卖出理由 / 主要利好 / 主要利空 / 期权仓位建议
-- [ ] `src/components/AnalysisPanel.tsx`:
-  - 流式文字逐字渲染(SSE-like)
-  - 结构化展示:归因 / 多方 / 空方 / 建议
-
----
-
-### M6 — 整点 insight + 每日机会榜
-
-**目标**:开盘期间自动推送持仓摘要,开盘前自动筛机会。
-
-- [ ] 安装 `node-cron` + `nyse-trading-days`
-- [ ] `electron/services/scheduler.ts`:
-  - **每日 09:00 ET**(开盘前 30 分钟):
-    - 用 claude `--resume daily-screen-<YYYYMMDD> --allowedTools WebFetch,WebSearch`
-    - Prompt:"今天美股最值得关注的 10 支股票,结合隔夜新闻+技术面+板块轮动"
-    - 解析结果 → 写入 `daily_picks` 表
-  - **工作日 09:30-16:00 ET 每整点**:
-    - 汇总当前持仓 P&L + 当日新闻
-    - claude `--resume hourly-<YYYYMMDD>` 生成 insight
-    - 写入 `insights` 表
-    - 推送系统通知(`Notification` API)
-- [ ] `src/components/HourlyInsight.tsx`:历史 insight 列表(今日回顾)
-
----
-
-### M7 — 打磨
-
-- [ ] 快捷键自定义 UI(设置页)
-- [ ] 限流触发时 UI 提示(toast:"数据源限流,使用缓存")
-- [ ] 错误边界(React ErrorBoundary)
-- [ ] 空状态设计(无持仓 / 无网络 / claude 未安装)
-- [ ] 开盘/收盘状态标识(Tray 图标颜色变化)
-- [ ] 菜单栏:今日机会榜快速预览(不开窗口)
-
----
-
-## claude CLI 会话策略
-
-| 会话 ID | 用途 | 生命周期 |
+| 用途 | 会话 / session id | 生命周期 |
 |---|---|---|
-| `analysis-<SYMBOL>` | 单标的深度分析 | 按需创建,可追问 |
-| `hourly-<YYYYMMDD>` | 当日整点 insight | 每个交易日一个 |
-| `daily-screen-<YYYYMMDD>` | 每日机会榜筛选 | 每个交易日一次 |
-| (无 resume) | OCR 持仓识别 | 一次性,不复用 |
+| 个股分析 | `analysis-<SYMBOL>-<timestamp>` | 按需生成，可取消同 symbol 旧进程 |
+| 聊天 | renderer 传入 session id | 单次流式问答 |
+| 个股资料 | `stock-profile-*` 等 | 生成后写 SQLite |
+| OCR 导入 | 无持久 resume | 一次性识别 |
+| 每日机会榜 | scheduler 内部任务 | 每个交易日一次 |
+| 整点 insight | scheduler 内部任务 | 交易日盘中 |
 
 ---
 
-## 关键风险
+## 已知风险和待处理
 
-| 风险 | 缓解 |
-|---|---|
-| Yahoo Finance 非官方 API,随时可能变 | 缓存兜底 + UI 标"数据陈旧" + Finnhub 备用 |
-| claude CLI 路径/登录态失效 | 启动时探测,失败给用户引导文案 |
-| 期权数据质量参差 | 允许用户手填 strike/expiry 作兜底 |
-| 开盘时段判断(时区) | 用 `nyse-trading-days` 库,避免手写节假日 |
-| claude 调用成本 | 会话复用降成本;OCR/分析按需触发,不轮询 |
+| 风险 / 问题 | 影响 | 处理方向 |
+|---|---|---|
+| Yahoo Finance 非官方 API | 接口变化会影响行情 | 保持缓存和 stale fallback，必要时增加备用源 |
+| Claude CLI 路径和登录态 | AI 功能不可用 | 启动检测和设置页引导 |
+| Claude 调用使用 `--dangerously-skip-permissions` | 本机安全边界偏宽 | 后续收紧工具权限和 prompt 能力 |
+| 期权数据质量不稳定 | 期权链和持仓估值可能偏差 | 允许手动录入，增加数据源校验 |
+| 市场节假日判断不完整 | 定时任务可能误触发 | 当前用 `date-holidays`，后续可换 NYSE 专用 calendar |
+| 文档需要随代码更新 | 认知偏差 | README / PLAN 已按当前实现同步 |
+
+---
+
+## 下一步建议
+
+1. 先修 typecheck 和明显缓存 key 问题，保证主干可构建。
+2. 增加 ErrorBoundary 和关键 IPC 错误提示。
+3. 为 market、parser、scheduler 的核心路径补最小测试。
+4. 梳理设置页：Claude 状态、Finnhub key、缓存清理、快捷键。
+5. 做一次生产打包验证，确认 native deps 和 Electron 路径正常。

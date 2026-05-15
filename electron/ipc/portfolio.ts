@@ -1,11 +1,11 @@
 import { ipcMain } from 'electron'
 import { parseFile } from '../services/parser'
 import { saveHoldings, listHoldings, deleteHolding, clearHoldings, updateHolding } from '../services/db'
-import type { HoldingRecord } from '../services/parser'
+import type { HoldingRecord, ImportHint } from '../services/parser'
 
 export function registerPortfolioHandlers() {
-  ipcMain.handle('portfolio:import', async (_e, filePath: string): Promise<HoldingRecord[]> => {
-    return parseFile(filePath)
+  ipcMain.handle('portfolio:import', async (_e, filePath: string, hint?: ImportHint): Promise<HoldingRecord[]> => {
+    return parseFile(filePath, hint)
   })
 
   ipcMain.handle('portfolio:save', (_e, records: HoldingRecord[]) => {
@@ -17,6 +17,7 @@ export function registerPortfolioHandlers() {
       strike: r.strike,
       expiry: r.expiry,
       side: r.side,
+      direction: r.direction,
       exchange: r.exchange,
     })))
     return { ok: true }

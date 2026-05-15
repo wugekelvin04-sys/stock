@@ -36,18 +36,11 @@ export async function detectClaude(): Promise<ClaudeInfo> {
   return { ok: false, error: '未找到 claude CLI' }
 }
 
-async function getClaudeBin(): Promise<string> {
-  if (_claudeBin) return _claudeBin
-  const info = await detectClaude()
-  if (!info.ok || !info.path) throw new Error(info.error ?? 'claude not found')
-  return info.path
-}
-
 // ── Analysis prompt ────────────────────────────────────────────────────────────
 
 export type AnalysisMode = 'full' | 'why' | 'call' | 'trend'
 
-function contextSuffix(symbol: string, context: AnalysisContext): string {
+function contextSuffix(context: AnalysisContext): string {
   const lines: string[] = []
   if (context.price) lines.push(`当前价格: $${context.price}`)
   if (context.changePercent !== undefined) lines.push(`今日涨跌: ${context.changePercent >= 0 ? '+' : ''}${context.changePercent.toFixed(2)}%`)
@@ -60,7 +53,7 @@ function contextSuffix(symbol: string, context: AnalysisContext): string {
 }
 
 function buildAnalysisPrompt(symbol: string, context: AnalysisContext, mode: AnalysisMode = 'full'): string {
-  const suffix = contextSuffix(symbol, context)
+  const suffix = contextSuffix(context)
 
   if (mode === 'why') {
     return `用 WebSearch 搜索 ${symbol} 今日最新消息，然后用中文简明回答：
@@ -379,4 +372,67 @@ export async function startChat(
   proc.on('error', (err) => {
     win.webContents.send('chat:chunk', { type: 'error', error: err.message, sessionId })
   })
+}
+
+// ── Generic streaming helper (no win dependency) ──────────────────────────────
+
+export function streamClaude({ claudeBin, prompt, sessionId, onToken, onDone, onError }: {
+  claudeBin: string
+  prompt: string
+  sessionId: string
+  onToken: (text: string) => void
+  onDone: () => void
+  onError: (err: string) => void
+}) {
+  const spawnEnv = {
+    HOME: os.homedir(),
+    USER: os.userInfo().username,
+    LOGNAME: os.userInfo().username,
+    TMPDIR: os.tmpdir(),
+    PATH: [`${os.homedir()}/.local/bin`, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', process.env.PATH ?? ''].join(':'),
+    ...(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_BIN', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+      .reduce((acc, k) => { if (process.env[k]) acc[k] = process.env[k]!; return acc }, {} as Record<string, string>)),
+  }
+
+  const args = ['--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--mcp-config', '{"mcpServers":{}}', '--strict-mcp-config']
+  const proc = spawn(claudeBin, args, { env: spawnEnv, stdio: ['pipe', 'pipe', 'pipe'] })
+  activeProcesses.set(sessionId, proc)
+
+  proc.on('spawn', () => { proc.stdin!.write(prompt); proc.stdin!.end() })
+
+  let buffer = ''
+  let doneSent = false
+  proc.stdout!.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString()
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try {
+        const msg = JSON.parse(line) as Record<string, unknown>
+        if (msg.type === 'assistant') {
+          const content = (msg.message as Record<string, unknown>)?.content
+          if (Array.isArray(content)) {
+            for (const block of content as Record<string, unknown>[]) {
+              if (block.type === 'text' && typeof block.text === 'string' && block.text) onToken(block.text as string)
+            }
+          }
+        } else if (msg.type === 'result') {
+          if (!doneSent) { doneSent = true; onDone() }
+        }
+      } catch { /* non-JSON line */ }
+    }
+  })
+
+  proc.stderr!.on('data', (chunk: Buffer) => { console.error('[claude stderr]', chunk.toString().slice(0, 200)) })
+
+  proc.on('close', (code) => {
+    activeProcesses.delete(sessionId)
+    if (!doneSent) {
+      if (code !== 0 && code !== null) onError(`claude 进程退出 (code ${code})`)
+      else onDone()
+    }
+  })
+
+  proc.on('error', (err) => { if (!doneSent) onError(err.message) })
 }
