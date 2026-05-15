@@ -1,0 +1,237 @@
+import yahooFinance from 'yahoo-finance2'
+import axios from 'axios'
+import { withCache, TTL } from './cache'
+import { yahooLimiter, finnhubLimiter } from './ratelimit'
+
+const FINNHUB_KEY = process.env.FINNHUB_API_KEY ?? ''
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface Quote {
+  symbol: string
+  name: string
+  price: number
+  change: number
+  changePercent: number
+  volume: number
+  marketCap?: number
+  fetchedAt: number
+}
+
+export interface HistoryBar {
+  date: string   // YYYY-MM-DD
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+}
+
+export interface OptionContract {
+  contractSymbol: string
+  strike: number
+  expiry: string
+  type: 'call' | 'put'
+  lastPrice: number
+  bid: number
+  ask: number
+  impliedVolatility: number
+  openInterest: number
+  delta?: number
+}
+
+export interface SearchResult {
+  symbol: string
+  name: string
+  exchange: string
+  type: string
+}
+
+export interface ScreenerItem {
+  symbol: string
+  name: string
+  price: number
+  changePercent: number
+  volume: number
+}
+
+export interface CachedResult<T> {
+  data: T
+  fromCache: boolean
+  fetchedAt?: number
+  staleSince?: number
+}
+
+// ── Quotes ────────────────────────────────────────────────────────────────────
+
+export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]>> {
+  const key = `quotes:${symbols.sort().join(',')}`
+  return withCache(key, TTL.QUOTE, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results: any = await yahooFinance.quote(symbols as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const arr: any[] = Array.isArray(results) ? results : [results]
+    return arr.map((q) => ({
+      symbol: q.symbol ?? '',
+      name: q.shortName ?? q.longName ?? q.symbol ?? '',
+      price: q.regularMarketPrice ?? 0,
+      change: q.regularMarketChange ?? 0,
+      changePercent: q.regularMarketChangePercent ?? 0,
+      volume: q.regularMarketVolume ?? 0,
+      marketCap: q.marketCap,
+      fetchedAt: Date.now(),
+    })) as Quote[]
+  }, { allowStale: true })
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+export type HistoryPeriod = '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y'
+
+export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'): Promise<CachedResult<HistoryBar[]>> {
+  const key = `history:${symbol}:${period}`
+  return withCache(key, TTL.HISTORY, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows: any[] = await yahooFinance.historical(symbol, { period1: periodToDate(period), interval: '1d' } as any)
+    return rows.map((r) => ({
+      date: r.date.toISOString().slice(0, 10),
+      open: r.open ?? 0,
+      high: r.high ?? 0,
+      low: r.low ?? 0,
+      close: r.close ?? 0,
+      volume: r.volume ?? 0,
+    }))
+  }, { allowStale: true })
+}
+
+function periodToDate(period: HistoryPeriod): Date {
+  const d = new Date()
+  const map: Record<HistoryPeriod, number> = { '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825 }
+  d.setDate(d.getDate() - map[period])
+  return d
+}
+
+// ── Options ───────────────────────────────────────────────────────────────────
+
+export async function getOptionChain(symbol: string): Promise<CachedResult<OptionContract[]>> {
+  const key = `options:${symbol}`
+  return withCache(key, TTL.OPTION_CHAIN, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain: any = await yahooFinance.options(symbol as any)
+    const contracts: OptionContract[] = []
+    for (const exp of (chain.expirationDates ?? []) as unknown[]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const detail: any = await yahooFinance.options(symbol as any, { date: exp as any } as any)
+      await yahooLimiter.acquire()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const c of (detail.options?.[0]?.calls ?? []) as any[]) {
+        contracts.push(toContract(c, 'call'))
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const p of (detail.options?.[0]?.puts ?? []) as any[]) {
+        contracts.push(toContract(p, 'put'))
+      }
+    }
+    return contracts
+  }, { allowStale: true })
+}
+
+function toContract(c: Record<string, unknown>, type: 'call' | 'put'): OptionContract {
+  return {
+    contractSymbol: String(c.contractSymbol ?? ''),
+    strike: Number(c.strike ?? 0),
+    expiry: c.expiration instanceof Date ? c.expiration.toISOString().slice(0, 10) : String(c.expiration ?? ''),
+    type,
+    lastPrice: Number(c.lastPrice ?? 0),
+    bid: Number(c.bid ?? 0),
+    ask: Number(c.ask ?? 0),
+    impliedVolatility: Number(c.impliedVolatility ?? 0),
+    openInterest: Number(c.openInterest ?? 0),
+  }
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+export async function searchSymbols(query: string): Promise<CachedResult<SearchResult[]>> {
+  const key = `search:${query.toLowerCase()}`
+  return withCache(key, TTL.SEARCH, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any = await yahooFinance.search(query, { quotesCount: 10, newsCount: 0 } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ((res.quotes ?? []) as any[]).map((q) => ({
+      symbol: q.symbol ?? '',
+      name: q.shortName ?? q.longName ?? '',
+      exchange: q.exchange ?? '',
+      type: q.typeDisp ?? q.quoteType ?? '',
+    })) as SearchResult[]
+  })
+}
+
+// ── Screeners ─────────────────────────────────────────────────────────────────
+
+export async function getGainers(): Promise<CachedResult<ScreenerItem[]>> {
+  return fetchScreener('day_gainers')
+}
+
+export async function getLosers(): Promise<CachedResult<ScreenerItem[]>> {
+  return fetchScreener('day_losers')
+}
+
+async function fetchScreener(scrId: string): Promise<CachedResult<ScreenerItem[]>> {
+  const key = `screener:${scrId}`
+  return withCache(key, TTL.SCREENER, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any = await yahooFinance.screener({ scrIds: scrId, count: 10 } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ((res.quotes ?? []) as any[]).map((q) => ({
+      symbol: q.symbol ?? '',
+      name: q.shortName ?? q.symbol ?? '',
+      price: q.regularMarketPrice ?? 0,
+      changePercent: q.regularMarketChangePercent ?? 0,
+      volume: q.regularMarketVolume ?? 0,
+    })) as ScreenerItem[]
+  }, { allowStale: true })
+}
+
+// ── News (Finnhub fallback) ────────────────────────────────────────────────────
+
+export interface NewsItem {
+  headline: string
+  summary: string
+  url: string
+  datetime: number
+  source: string
+}
+
+export async function getNews(symbol: string): Promise<CachedResult<NewsItem[]>> {
+  const key = `news:${symbol}`
+  return withCache(key, TTL.NEWS, async () => {
+    if (FINNHUB_KEY) {
+      await finnhubLimiter.acquire()
+      const to = new Date().toISOString().slice(0, 10)
+      const from = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10)
+      const res = await axios.get<NewsItem[]>(
+        `https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${from}&to=${to}&token=${FINNHUB_KEY}`,
+        { timeout: 8000 },
+      )
+      return res.data.slice(0, 10)
+    }
+    // fallback: yahoo news via search
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any = await yahooFinance.search(symbol, { quotesCount: 0, newsCount: 8 } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return ((res.news ?? []) as any[]).map((n) => ({
+      headline: n.title ?? '',
+      summary: '',
+      url: n.link ?? '',
+      datetime: n.providerPublishTime instanceof Date ? Math.floor(n.providerPublishTime.getTime() / 1000) : 0,
+      source: n.publisher ?? '',
+    }))
+  }, { allowStale: true })
+}

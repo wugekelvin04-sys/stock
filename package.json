@@ -14,8 +14,14 @@
     "typecheck": "tsc -p electron/tsconfig.json --noEmit && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "axios": "^1.16.1",
+    "better-sqlite3": "^12.10.0",
+    "canvas": "^3.2.3",
+    "pdfjs-dist": "^5.7.284",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "yahoo-finance2": "^3.14.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",

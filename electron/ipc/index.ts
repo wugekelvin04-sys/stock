@@ -1,7 +1,11 @@
 import { app, ipcMain } from 'electron'
 import { detectClaude } from '../services/claude'
+import { registerMarketHandlers } from './market'
+import { registerPortfolioHandlers } from './portfolio'
 
 export function registerIpcHandlers() {
+  registerMarketHandlers()
+  registerPortfolioHandlers()
   ipcMain.handle('app:ping', async (_e, msg: string) => `pong: ${msg ?? ''}`)
 
   ipcMain.handle('claude:info', async () => detectClaude())
