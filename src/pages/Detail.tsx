@@ -4,6 +4,7 @@ import { ArrowLeft, RefreshCw, ExternalLink } from 'lucide-react'
 import { PriceChart } from '../components/PriceChart'
 import { AnalysisPanel } from '../components/AnalysisPanel'
 import { usePortfolioStore } from '../stores/portfolio'
+import { toast } from '../stores/toast'
 import type { HistoryBar, Quote, NewsItem, CachedResult } from '../../electron/services/market'
 
 type Period = '1mo' | '3mo' | '6mo' | '1y' | '2y'
@@ -56,6 +57,9 @@ export function Detail() {
       setQuote(quoteRes.data?.[0] ?? null)
       setNews(newsRes.data ?? [])
       setFromCache(histRes.fromCache)
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      toast.error(`${symbol} 数据加载失败: ${msg.slice(0, 60)}`, '行情错误')
     } finally {
       setLoading(false)
     }

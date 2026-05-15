@@ -1,7 +1,7 @@
 import { app, BrowserWindow, globalShortcut, Menu, Tray, nativeImage } from 'electron'
 import path from 'node:path'
 import { registerIpcHandlers } from './ipc/index'
-import { startScheduler, stopScheduler } from './services/scheduler'
+import { startScheduler, stopScheduler, setSchedulerTray } from './services/scheduler'
 
 const isDev = process.env.NODE_ENV === 'development'
 const TOGGLE_SHORTCUT = 'CommandOrControl+Alt+\\'
@@ -90,6 +90,7 @@ if (!gotLock) {
     registerIpcHandlers()
     mainWindow = createWindow()
     buildTray()
+    if (tray) setSchedulerTray(tray)
     void startScheduler()
 
     const registered = globalShortcut.register(TOGGLE_SHORTCUT, toggleWindow)

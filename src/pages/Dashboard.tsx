@@ -3,6 +3,7 @@ import { RefreshCw } from 'lucide-react'
 import { SectionCard } from '../components/SectionCard'
 import { TickerRow } from '../components/TickerRow'
 import { HourlyInsight } from '../components/HourlyInsight'
+import { toast } from '../stores/toast'
 import type { ScreenerItem, CachedResult } from '../../electron/services/market'
 
 interface DailyPick { symbol: string; reason: string }
@@ -28,7 +29,12 @@ export function Dashboard() {
       if (p) setPicks(p)
       setLastRefresh(Date.now())
     } catch (e) {
-      console.error('Dashboard load error:', e)
+      const msg = (e as Error).message ?? String(e)
+      if (msg.includes('rate') || msg.includes('429')) {
+        toast.warning('数据请求过于频繁，稍后重试', '限流')
+      } else {
+        toast.error(`行情加载失败: ${msg.slice(0, 60)}`, '网络错误')
+      }
     } finally {
       setLoading(false)
     }

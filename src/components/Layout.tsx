@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { LayoutDashboard, Briefcase, Search, Settings } from 'lucide-react'
 import { SearchBar } from './SearchBar'
 import { useEffect, useState } from 'react'
+import { toast } from '../stores/toast'
 
 const NAV = [
   { to: '/', icon: LayoutDashboard, label: '市场' },
@@ -20,6 +21,17 @@ export function Layout() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
+  }, [])
+
+  // Scheduler push notifications via toast
+  useEffect(() => {
+    const unsubPicks = window.api.insight.onDailyPicksUpdated((payload) => {
+      toast.success(`Claude 精选了 ${payload.picks.length} 支今日机会股`, '今日机会榜已更新')
+    })
+    const unsubInsight = window.api.insight.onInsightUpdated(() => {
+      toast.info('持仓整点 Insight 已更新', '市场动态')
+    })
+    return () => { unsubPicks(); unsubInsight() }
   }, [])
 
   return (

@@ -1,8 +1,9 @@
 import { useEffect, useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload, Trash2, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react'
+import { Upload, Trash2, TrendingUp, TrendingDown, RefreshCw, Briefcase } from 'lucide-react'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useMarketStore } from '../stores/market'
+import { toast } from '../stores/toast'
 import type { HoldingRow } from '../../electron/services/db'
 
 function fmt(n: number, d = 2) {
@@ -44,8 +45,7 @@ export function Portfolio() {
         const records = await window.api.portfolio.import(file.path ?? (file as File & { path?: string }).path ?? '')
         setImportPreview(records)
       } catch (e) {
-        console.error('Import error:', e)
-        alert(`识别失败: ${(e as Error).message}`)
+        toast.error(`识别失败: ${(e as Error).message?.slice(0, 80)}`, '导入错误')
       } finally {
         setImporting(false)
       }
@@ -220,13 +220,23 @@ export function Portfolio() {
 
         {/* 空状态 */}
         {holdings.length === 0 && !loading && !importPreview && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <p className="text-sm text-fg-muted">还没有持仓记录</p>
-            <p className="mt-1 text-xs text-fg-subtle">点击"导入截图 / PDF"上传券商截图自动识别</p>
-            <button onClick={handleImport} className="btn btn-primary mt-4 flex items-center gap-2">
-              <Upload size={14} />
-              导入持仓
-            </button>
+          <div className="empty-state animate-in">
+            <div className="empty-state-icon">
+              <Briefcase size={32} />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-fg-muted">还没有持仓记录</p>
+              <p className="mt-1 text-xs text-fg-subtle max-w-xs">
+                上传券商 App 截图或 PDF，Claude 自动识别股票、期权持仓及成本
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 items-center">
+              <button onClick={handleImport} className="btn btn-primary flex items-center gap-2">
+                <Upload size={14} />
+                导入截图 / PDF
+              </button>
+              <p className="text-xs text-fg-subtle">支持 Robinhood、Webull、TD 等主流券商截图</p>
+            </div>
           </div>
         )}
       </div>

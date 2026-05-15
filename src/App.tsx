@@ -5,6 +5,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Portfolio } from './pages/Portfolio'
 import { Detail } from './pages/Detail'
 import { Settings } from './pages/Settings'
+import { ToastContainer } from './components/Toast'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 5 * 60 * 1000, retry: 1 } },
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>
+        <ToastContainer />
       </MemoryRouter>
     </QueryClientProvider>
   )

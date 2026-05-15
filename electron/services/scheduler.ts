@@ -1,10 +1,14 @@
 import cron from 'node-cron'
 import Holidays from 'date-holidays'
-import { BrowserWindow, Notification } from 'electron'
+import { BrowserWindow, Notification, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { getClaudeBinPath } from './claudeHelper'
 import { saveDailyPicks, saveInsight, listHoldings } from './db'
 import type { DailyPick } from './db'
+
+// Tray reference for status updates
+let _tray: Tray | null = null
+export function setSchedulerTray(tray: Tray) { _tray = tray }
 
 const hd = new Holidays('US')
 
@@ -148,6 +152,20 @@ function notify(title: string, body: string) {
   new Notification({ title, body, silent: false }).show()
 }
 
+// ── Tray market-hours indicator ────────────────────────────────────────────────
+
+export function updateTrayStatus() {
+  if (!_tray) return
+  const trading = isNYSETradingDay()
+  const { hour, minute } = nowInET()
+  const isOpen = trading && (
+    (hour === 9 && minute >= 30) || (hour > 9 && hour < 16) || (hour === 16 && minute === 0)
+  )
+  // Green dot during market hours, plain during closed
+  _tray.setTitle(isOpen ? '●' : '·')
+  _tray.setToolTip(isOpen ? 'Stock Desk · 市场开盘中' : 'Stock Desk · 市场休市')
+}
+
 // ── Public scheduler API ───────────────────────────────────────────────────────
 
 let started = false
@@ -163,6 +181,10 @@ export async function startScheduler() {
     console.warn('[scheduler] claude not found, scheduler disabled:', (e as Error).message)
     return
   }
+
+  // Update tray status every 5 minutes
+  updateTrayStatus()
+  cron.schedule('*/5 * * * *', updateTrayStatus)
 
   // Daily picks: every day at 09:00 ET → run as cron in local time with ET check
   // Cron runs every minute at :00 of 9th hour — but we check ET inside
