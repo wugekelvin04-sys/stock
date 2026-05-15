@@ -1,6 +1,7 @@
 import { app, BrowserWindow, globalShortcut, Menu, Tray, nativeImage } from 'electron'
 import path from 'node:path'
 import { registerIpcHandlers } from './ipc/index'
+import { startScheduler, stopScheduler } from './services/scheduler'
 
 const isDev = process.env.NODE_ENV === 'development'
 const TOGGLE_SHORTCUT = 'CommandOrControl+Alt+\\'
@@ -89,6 +90,7 @@ if (!gotLock) {
     registerIpcHandlers()
     mainWindow = createWindow()
     buildTray()
+    void startScheduler()
 
     const registered = globalShortcut.register(TOGGLE_SHORTCUT, toggleWindow)
     if (!registered) {
@@ -104,7 +106,7 @@ if (!gotLock) {
     })
   })
 
-  app.on('before-quit', () => { isQuitting = true })
+  app.on('before-quit', () => { isQuitting = true; stopScheduler() })
   app.on('will-quit', () => globalShortcut.unregisterAll())
   app.on('window-all-closed', () => {
     // 不退出 — 保留后台 scheduler;用户从 Tray 或 Cmd+Q 退出

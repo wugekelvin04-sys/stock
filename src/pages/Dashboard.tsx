@@ -2,30 +2,30 @@ import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { SectionCard } from '../components/SectionCard'
 import { TickerRow } from '../components/TickerRow'
+import { HourlyInsight } from '../components/HourlyInsight'
 import type { ScreenerItem, CachedResult } from '../../electron/services/market'
-import type { DailyPick } from '../../electron/services/db'
 
-interface DailyPicksResult {
-  date: string
-  picks: DailyPick[]
-}
+interface DailyPick { symbol: string; reason: string }
+interface DailyPicksResult { date: string; picks: DailyPick[] }
 
 export function Dashboard() {
   const [gainers, setGainers] = useState<CachedResult<ScreenerItem[]> | null>(null)
   const [losers, setLosers] = useState<CachedResult<ScreenerItem[]> | null>(null)
-  const [picks, _setPicks] = useState<DailyPicksResult | null>(null)
+  const [picks, setPicks] = useState<DailyPicksResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | null>(null)
 
   const load = async () => {
     setLoading(true)
     try {
-      const [g, l] = await Promise.all([
+      const [g, l, p] = await Promise.all([
         window.api.market.gainers(),
         window.api.market.losers(),
+        window.api.insight.dailyPicks(),
       ])
       setGainers(g)
       setLosers(l)
+      if (p) setPicks(p)
       setLastRefresh(Date.now())
     } catch (e) {
       console.error('Dashboard load error:', e)
@@ -36,9 +36,10 @@ export function Dashboard() {
 
   useEffect(() => {
     void load()
-    // auto-refresh every 15 minutes
     const t = setInterval(load, 15 * 60 * 1000)
-    return () => clearInterval(t)
+    // listen for scheduler push
+    const unsub = window.api.insight.onDailyPicksUpdated((payload) => setPicks(payload))
+    return () => { clearInterval(t); unsub() }
   }, [])
 
   function timeAgo(ms: number) {
@@ -50,8 +51,10 @@ export function Dashboard() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between border-b border-border px-5 py-3" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+      <header
+        className="flex items-center justify-between border-b border-border px-5 py-3"
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
         <div className="flex items-center gap-2">
           <span className="font-semibold text-fg">市场总览</span>
           {lastRefresh && <span className="text-xs text-fg-subtle">{timeAgo(lastRefresh)}</span>}
@@ -67,8 +70,7 @@ export function Dashboard() {
         </button>
       </header>
 
-      {/* Body */}
-      <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* 涨幅榜 */}
           <SectionCard
@@ -127,7 +129,7 @@ export function Dashboard() {
           {/* 机会榜 */}
           <SectionCard
             title="今日机会榜"
-            subtitle={picks ? `AI 精选 · ${picks.date}` : '每日开盘前 AI 筛选'}
+            subtitle={picks ? `AI 精选 · ${picks.date}` : '每日 09:00 ET 开盘前 AI 筛选'}
           >
             {picks?.picks.length ? (
               <div className="-mx-1 space-y-0.5">
@@ -145,12 +147,15 @@ export function Dashboard() {
               </div>
             ) : (
               <div className="py-6 text-center">
-                <p className="text-xs text-fg-subtle">开盘前 Claude 自动筛选</p>
-                <p className="mt-1 text-xs text-fg-subtle">M6 阶段启用 scheduler 后生效</p>
+                <p className="text-xs text-fg-subtle">每个交易日开盘前 Claude 自动筛选</p>
+                <p className="mt-1 text-xs text-fg-subtle">结合隔夜新闻 + 技术面 + 板块轮动</p>
               </div>
             )}
           </SectionCard>
         </div>
+
+        {/* 整点 Insight 时间线 */}
+        <HourlyInsight />
       </div>
     </div>
   )

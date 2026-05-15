@@ -43,6 +43,22 @@ const api = {
     },
   },
 
+  // ── Insight ────────────────────────────────────────────────────────────────
+  insight: {
+    list: (limit?: number) => ipcRenderer.invoke('insight:list', limit) as Promise<{ id: number; triggered_at: number; content: string }[]>,
+    dailyPicks: () => ipcRenderer.invoke('insight:daily-picks') as Promise<{ date: string; picks: { symbol: string; reason: string }[] } | null>,
+    onInsightUpdated: (cb: (payload: { content: string; triggeredAt: number }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, payload: { content: string; triggeredAt: number }) => cb(payload)
+      ipcRenderer.on('scheduler:insight-updated', h)
+      return () => ipcRenderer.off('scheduler:insight-updated', h)
+    },
+    onDailyPicksUpdated: (cb: (payload: { date: string; picks: { symbol: string; reason: string }[] }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, payload: { date: string; picks: { symbol: string; reason: string }[] }) => cb(payload)
+      ipcRenderer.on('scheduler:daily-picks-updated', h)
+      return () => ipcRenderer.off('scheduler:daily-picks-updated', h)
+    },
+  },
+
   // ── Shell ──────────────────────────────────────────────────────────────────
   openExternal: (url: string) => shell.openExternal(url),
 }
