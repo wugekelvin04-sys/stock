@@ -1,13 +1,14 @@
 import { cacheGet, cacheSet, cacheGetStale } from './db'
 
 export const TTL = {
-  QUOTE: 300,        // 5 min
-  SCREENER: 900,     // 15 min
-  OPTION_CHAIN: 1800,// 30 min
-  NEWS: 1800,        // 30 min
-  FUNDAMENTALS: 86400, // 24 h
-  HISTORY: 3600,     // 1 h (日K变化不频繁)
-  SEARCH: 600,       // 10 min
+  QUOTE: 300,           // 5 min  — 实时报价
+  SCREENER: 900,        // 15 min — 涨跌幅榜
+  OPTION_CHAIN: 1800,   // 30 min — 当日未到期期权链
+  NEWS: 3600,           // 1 h    — 新闻
+  HISTORY: 4 * 3600,    // 4 h    — 含当日未收盘 bar 的日线（1mo）
+  FUNDAMENTALS: 86400,  // 24 h   — 基本面 / 历史日线
+  SEARCH: 3600,         // 1 h    — 搜索结果
+  IMMUTABLE: 30 * 86400,// 30 天  — 已收盘历史 bar / 已到期期权链（数据永不变）
 } as const
 
 export async function withCache<T>(

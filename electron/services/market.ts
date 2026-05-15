@@ -137,9 +137,9 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
  * - 3mo+: 24 h — all bars are fully settled, data is static
  */
 function historyCacheTTL(period: HistoryPeriod): number {
-  if (period === '1d') return TTL.QUOTE          // 5 min
-  if (period === '1mo') return TTL.HISTORY       // 1 h
-  return TTL.FUNDAMENTALS                        // 24 h for 3mo/6mo/1y/2y/5y
+  if (period === '1d') return TTL.QUOTE      // 5 min  — 日内实时
+  if (period === '1mo') return TTL.HISTORY   // 4 h    — 含今日未收盘 bar
+  return TTL.IMMUTABLE                       // 30 天  — 全部已收盘，数据不再变化
 }
 
 function periodToDate(period: HistoryPeriod): Date {
@@ -217,7 +217,7 @@ function toContract(c: Record<string, unknown>, type: 'call' | 'put'): OptionCon
 export async function getOptionDates(symbol: string): Promise<string[]> {
   // Expiration date list changes at most daily — cache 4 hours
   const key = `option-dates:${symbol}`
-  const result = await withCache(key, 4 * 3600, async () => {
+  const result = await withCache(key, TTL.HISTORY, async () => {  // 4 h
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain: any = await yahooFinance.options(symbol as any)
@@ -232,7 +232,7 @@ export async function getOptionsByDate(symbol: string, date: string): Promise<Ca
   const key = `options:${symbol}:${date}`
   // Expired option dates are fully settled — cache 7 days; future dates cache 30 min
   const today = new Date().toISOString().slice(0, 10)
-  const ttl = date < today ? 7 * 86400 : TTL.OPTION_CHAIN
+  const ttl = date < today ? TTL.IMMUTABLE : TTL.OPTION_CHAIN  // 过期链永久缓存，活跃链 30min
   return withCache(key, ttl, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
