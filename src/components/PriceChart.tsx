@@ -20,6 +20,7 @@ interface Props {
 interface TooltipState {
   visible: boolean
   x: number
+  y: number
   price: number
   open?: number
   high?: number
@@ -31,7 +32,7 @@ function sma(bars: HistoryBar[], period: number): { time: string; value: number 
   const result: { time: string; value: number }[] = []
   for (let i = period - 1; i < bars.length; i++) {
     const sum = bars.slice(i - period + 1, i + 1).reduce((s, b) => s + b.close, 0)
-    result.push({ time: bars[i].date, value: parseFloat((sum / period).toFixed(4)) })
+    result.push({ time: bars[i].date.slice(0, 10), value: parseFloat((sum / period).toFixed(4)) })
   }
   return result
 }
@@ -40,14 +41,19 @@ function fmt(n: number) {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-function fmtTime(ts: number | string, isIntraday: boolean): string {
-  if (isIntraday && typeof ts === 'number') {
-    return new Date(ts * 1000).toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false,
-    }) + ' ET'
-  }
-  if (typeof ts === 'string') return ts
-  return String(ts)
+function toDateStr(raw: string): string {
+  // Normalize any date format to YYYY-MM-DD for lwc candlestick/daily series
+  return raw.slice(0, 10)
+}
+
+function toUTCTimestamp(raw: string): UTCTimestamp {
+  return Math.floor(new Date(raw).getTime() / 1000) as UTCTimestamp
+}
+
+function fmtIntraday(ts: number): string {
+  return new Date(ts * 1000).toLocaleTimeString('en-US', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false,
+  }) + ' ET'
 }
 
 const COLORS = {
@@ -61,10 +67,16 @@ const COLORS = {
   cost: '#a855f7',
 }
 
+const TOOLTIP_W = 260
+const TOOLTIP_H = 36
+const OFFSET = 12
+
 export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, x: 0, price: 0, time: '' })
+  const [tooltip, setTooltip] = useState<TooltipState>({
+    visible: false, x: 0, y: 0, price: 0, time: '',
+  })
 
   useEffect(() => {
     if (!containerRef.current || bars.length === 0) return
@@ -99,24 +111,25 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         lastValueVisible: true,
         priceLineVisible: false,
       })
-      const data = bars.map((b) => ({
-        time: Math.floor(new Date(b.date).getTime() / 1000) as UTCTimestamp,
-        value: b.close,
-      }))
-      lineSeries.setData(data)
+      lineSeries.setData(
+        bars.map((b) => ({ time: toUTCTimestamp(b.date), value: b.close })),
+      )
 
       chart.subscribeCrosshairMove((param) => {
-        if (!param.point || !param.time) {
+        if (!param.point || !param.time || param.point.x < 0) {
           setTooltip(t => ({ ...t, visible: false }))
           return
         }
         const v = param.seriesData.get(lineSeries) as { value?: number } | undefined
         if (v?.value == null) { setTooltip(t => ({ ...t, visible: false })); return }
+        const cw = containerRef.current?.clientWidth ?? 0
+        const ch = containerRef.current?.clientHeight ?? 0
+        const x = Math.min(param.point.x + OFFSET, cw - TOOLTIP_W - 4)
+        const y = Math.max(Math.min(param.point.y - TOOLTIP_H / 2, ch - TOOLTIP_H - 4), 4)
         setTooltip({
-          visible: true,
-          x: param.point.x,
+          visible: true, x, y,
           price: v.value,
-          time: fmtTime(param.time as number, true),
+          time: fmtIntraday(param.time as number),
         })
       })
     } else {
@@ -128,13 +141,11 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         wickUpColor: COLORS.up,
         wickDownColor: COLORS.down,
       })
+      // Normalize date to YYYY-MM-DD regardless of what's in cache
       candleSeries.setData(
         bars.map((b) => ({
-          time: b.date,
-          open: b.open,
-          high: b.high,
-          low: b.low,
-          close: b.close,
+          time: toDateStr(b.date),
+          open: b.open, high: b.high, low: b.low, close: b.close,
         })),
       )
 
@@ -160,7 +171,7 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
       }
 
       chart.subscribeCrosshairMove((param) => {
-        if (!param.point || !param.time) {
+        if (!param.point || !param.time || param.point.x < 0) {
           setTooltip(t => ({ ...t, visible: false }))
           return
         }
@@ -168,14 +179,15 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
           open?: number; high?: number; low?: number; close?: number
         } | undefined
         if (bar?.close == null) { setTooltip(t => ({ ...t, visible: false })); return }
+        const cw = containerRef.current?.clientWidth ?? 0
+        const ch = containerRef.current?.clientHeight ?? 0
+        const x = Math.min(param.point.x + OFFSET, cw - TOOLTIP_W - 4)
+        const y = Math.max(Math.min(param.point.y - TOOLTIP_H / 2, ch - TOOLTIP_H - 4), 4)
         setTooltip({
-          visible: true,
-          x: param.point.x,
+          visible: true, x, y,
           price: bar.close,
-          open: bar.open,
-          high: bar.high,
-          low: bar.low,
-          time: fmtTime(param.time as string, false),
+          open: bar.open, high: bar.high, low: bar.low,
+          time: String(param.time),
         })
       })
     }
@@ -204,32 +216,24 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
   }
 
   return (
-    <div className="relative w-full rounded-lg" style={{ height }}>
-      {/* Crosshair tooltip — above chart, not clipped */}
-      <div
-        className="pointer-events-none absolute top-2 left-3 z-10 flex items-center gap-3 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 transition-opacity duration-75"
-        style={{ opacity: tooltip.visible ? 1 : 0 }}
-      >
-        <span className="text-xs text-fg-subtle">{tooltip.time || ' '}</span>
-        {mode === 'line' ? (
-          <span className="font-mono text-sm font-semibold text-fg">
-            {tooltip.price ? `$${fmt(tooltip.price)}` : ' '}
-          </span>
-        ) : (
-          <>
-            <span className="font-mono text-sm font-semibold text-fg">
-              {tooltip.price ? `$${fmt(tooltip.price)}` : ' '}
+    <div className="relative w-full rounded-lg overflow-hidden" style={{ height }}>
+      <div ref={containerRef} className="w-full h-full" />
+
+      {/* Crosshair tooltip — follows cursor */}
+      {tooltip.visible && (
+        <div
+          className="pointer-events-none absolute flex items-center gap-2.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs shadow-lg"
+          style={{ left: tooltip.x, top: tooltip.y, zIndex: 10, whiteSpace: 'nowrap' }}
+        >
+          <span className="text-fg-subtle">{tooltip.time}</span>
+          <span className="font-mono font-semibold text-fg">${fmt(tooltip.price)}</span>
+          {mode === 'candle' && tooltip.open != null && tooltip.open > 0 && (
+            <span className="font-mono text-fg-subtle">
+              O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
             </span>
-            {tooltip.open != null && tooltip.open > 0 && (
-              <span className="text-xs text-fg-subtle font-mono">
-                O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
-              </span>
-            )}
-          </>
-        )}
-      </div>
-      {/* Chart fills remaining space below tooltip */}
-      <div ref={containerRef} className="absolute inset-0 rounded-lg overflow-hidden" />
+          )}
+        </div>
+      )}
     </div>
   )
 }
