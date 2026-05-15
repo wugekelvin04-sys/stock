@@ -54,9 +54,28 @@ function fmtIntraday(ts: number): string {
   }) + ' ET'
 }
 
+/**
+ * NYSE session boundaries in UTC hours (EDT = UTC-4).
+ * Pre-market:  04:00–09:30 ET  = 08:00–13:30 UTC
+ * Regular:     09:30–16:00 ET  = 13:30–20:00 UTC
+ * After-hours: 16:00–20:00 ET  = 20:00–00:00 UTC
+ */
+type Session = 'pre' | 'regular' | 'after'
+function getSession(isoStr: string): Session {
+  const utcH = new Date(isoStr).getUTCHours()
+  const utcM = new Date(isoStr).getUTCMinutes()
+  const utcMins = utcH * 60 + utcM
+  if (utcMins < 13 * 60 + 30) return 'pre'       // < 13:30 UTC
+  if (utcMins < 20 * 60) return 'regular'          // < 20:00 UTC
+  return 'after'
+}
+
 const COLORS = {
   bg: '#0b0d12', grid: '#1a1e27', text: '#8b94a7',
   up: '#22c55e', down: '#ef4444', ma20: '#3b82f6', ma50: '#f59e0b', cost: '#a855f7',
+  pre: '#f59e0b',    // 盘前 — 黄
+  regular: '#3b82f6',// 盘中 — 蓝
+  after: '#a855f7',  // 盘后 — 紫
 }
 
 const TOOLTIP_W = 280
@@ -81,22 +100,48 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
     chartRef.current = chart
 
     if (mode === 'line') {
-      const lineSeries = chart.addSeries(LineSeries, {
-        color: COLORS.ma20, lineWidth: 2,
-        crosshairMarkerVisible: true, lastValueVisible: true, priceLineVisible: false,
-      })
-      lineSeries.setData(bars.map((b) => ({ time: toUTC(b.date), value: b.close })))
+      // Split bars into three session segments and render each with its own color
+      const segments: Record<Session, { time: UTCTimestamp; value: number }[]> = {
+        pre: [], regular: [], after: [],
+      }
+      for (const b of bars) {
+        segments[getSession(b.date)].push({ time: toUTC(b.date), value: b.close })
+      }
+
+      const sessionColors: Record<Session, string> = {
+        pre: COLORS.pre, regular: COLORS.regular, after: COLORS.after,
+      }
+      // Create one series per session that has data; track them all for crosshair
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const seriesList: any[] = []
+      for (const session of ['pre', 'regular', 'after'] as Session[]) {
+        const data = segments[session]
+        if (data.length === 0) continue
+        const s = chart.addSeries(LineSeries, {
+          color: sessionColors[session],
+          lineWidth: 2,
+          crosshairMarkerVisible: true,
+          lastValueVisible: session === 'after' || (session === 'regular' && segments.after.length === 0),
+          priceLineVisible: false,
+        })
+        s.setData(data)
+        seriesList.push(s)
+      }
 
       chart.subscribeCrosshairMove((param) => {
         if (!param.point || !param.time || param.point.x < 0) {
           setTooltip(t => ({ ...t, visible: false })); return
         }
-        const v = param.seriesData.get(lineSeries) as { value?: number } | undefined
-        if (v?.value == null) { setTooltip(t => ({ ...t, visible: false })); return }
+        // Find value from whichever series has data at this crosshair position
+        let price: number | null = null
+        for (const s of seriesList) {
+          const v = param.seriesData.get(s) as { value?: number } | undefined
+          if (v?.value != null) { price = v.value; break }
+        }
+        if (price == null) { setTooltip(t => ({ ...t, visible: false })); return }
         const cw = containerRef.current?.clientWidth ?? 0
-        // Tooltip follows crosshair x (bar position), clamped to container
         const x = Math.min(Math.max(param.point.x - TOOLTIP_W / 2, 4), cw - TOOLTIP_W - 4)
-        setTooltip({ visible: true, x, price: v.value, time: fmtIntraday(param.time as number) })
+        setTooltip({ visible: true, x, price, time: fmtIntraday(param.time as number) })
       })
     } else {
       const candleSeries = chart.addSeries(CandlestickSeries, {

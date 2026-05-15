@@ -1,6 +1,6 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, ExternalLink } from 'lucide-react'
+import { ArrowLeft, RefreshCw, ExternalLink, Star } from 'lucide-react'
 import { PriceChart } from '../components/PriceChart'
 import { AnalysisPanel } from '../components/AnalysisPanel'
 import { OptionsChain } from '../components/OptionsChain'
@@ -30,6 +30,9 @@ function timeAgo(ts: number) {
   return `${Math.floor(m / 60)} 小时前`
 }
 
+interface WatchedGroup { groupId: number; groupName: string }
+interface Group { id: number; name: string }
+
 export function Detail() {
   const { symbol } = useParams<{ symbol: string }>()
   const navigate = useNavigate()
@@ -42,10 +45,28 @@ export function Detail() {
   const [loading, setLoading] = useState(false)
   const [fromCache, setFromCache] = useState(false)
 
+  // Watchlist state
+  const [watchedGroups, setWatchedGroups] = useState<WatchedGroup[]>([])
+  const [allGroups, setAllGroups] = useState<Group[]>([])
+  const [starOpen, setStarOpen] = useState(false)
+  const starBtnRef = useRef<HTMLDivElement>(null)
+
   const holding = useMemo(
     () => holdings.find((h) => h.symbol === symbol),
     [holdings, symbol],
   )
+
+  const isWatched = watchedGroups.length > 0
+
+  const loadWatchStatus = async () => {
+    if (!symbol) return
+    const [watched, groups] = await Promise.all([
+      window.api.watchlist.isWatched(symbol),
+      window.api.watchlist.listGroups(),
+    ])
+    setWatchedGroups(watched)
+    setAllGroups(groups)
+  }
 
   const load = async (p: Period) => {
     if (!symbol) return
@@ -79,6 +100,35 @@ export function Detail() {
   }
 
   useEffect(() => { void load(period) }, [symbol, period])
+  useEffect(() => { void loadWatchStatus() }, [symbol])
+
+  // Close star dropdown on outside click
+  useEffect(() => {
+    if (!starOpen) return
+    const handler = (e: MouseEvent) => {
+      if (starBtnRef.current && !starBtnRef.current.contains(e.target as Node)) {
+        setStarOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [starOpen])
+
+  const handleAddToGroup = async (groupId: number) => {
+    if (!symbol) return
+    await window.api.watchlist.addItem(groupId, symbol)
+    setStarOpen(false)
+    await loadWatchStatus()
+    toast.success(`已加入自选`, symbol)
+  }
+
+  const handleRemoveFromGroup = async (groupId: number) => {
+    if (!symbol) return
+    await window.api.watchlist.removeItem(groupId, symbol)
+    setStarOpen(false)
+    await loadWatchStatus()
+    toast.info(`已从自选移除`, symbol)
+  }
 
   const analysisContext = useMemo(() => ({
     price: quote?.price,
@@ -89,6 +139,9 @@ export function Detail() {
   }), [quote, holding, holdings, news, symbol])
 
   const up = (quote?.changePercent ?? 0) >= 0
+
+  // Groups not yet containing this symbol
+  const unwatchedGroups = allGroups.filter(g => !watchedGroups.some(w => w.groupId === g.id))
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -127,11 +180,66 @@ export function Detail() {
           className="flex items-center gap-2"
           style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          {fromCache && <span className="text-xs text-fg-subtle">缓存数据</span>}
+          {fromCache && <span className="text-xs text-fg-subtle">缓存</span>}
+
+          {/* Star / watchlist button */}
+          <div className="relative" ref={starBtnRef}>
+            <button
+              onClick={() => setStarOpen(o => !o)}
+              className={`btn flex items-center gap-1 ${isWatched ? 'text-yellow-400 border-yellow-400/30 bg-yellow-400/10 hover:bg-yellow-400/20' : ''}`}
+              title={isWatched ? '已收藏' : '加入自选'}
+            >
+              <Star size={13} className={isWatched ? 'fill-yellow-400' : ''} />
+            </button>
+
+            {starOpen && (
+              <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] rounded-lg border border-border bg-bg-elevated shadow-xl">
+                {watchedGroups.length > 0 && (
+                  <>
+                    <p className="px-3 pt-2 pb-1 text-[11px] text-fg-subtle uppercase tracking-wider">已收藏</p>
+                    {watchedGroups.map(g => (
+                      <button
+                        key={g.groupId}
+                        onClick={() => handleRemoveFromGroup(g.groupId)}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm text-fg hover:bg-bg-subtle transition-colors"
+                      >
+                        <span>{g.groupName}</span>
+                        <span className="text-xs text-accent-down">移除</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {unwatchedGroups.length > 0 && (
+                  <>
+                    {watchedGroups.length > 0 && <div className="my-1 border-t border-border" />}
+                    <p className="px-3 pt-2 pb-1 text-[11px] text-fg-subtle uppercase tracking-wider">加入分组</p>
+                    {unwatchedGroups.map(g => (
+                      <button
+                        key={g.id}
+                        onClick={() => handleAddToGroup(g.id)}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-fg hover:bg-bg-subtle transition-colors"
+                      >
+                        <Star size={12} />
+                        {g.name}
+                      </button>
+                    ))}
+                  </>
+                )}
+                {allGroups.length === 0 && (
+                  <button
+                    onClick={() => { setStarOpen(false); navigate('/watchlist') }}
+                    className="w-full px-3 py-2 text-left text-sm text-fg-muted hover:bg-bg-subtle transition-colors"
+                  >
+                    先创建自选分组 →
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
           <button onClick={() => load(period)} disabled={loading} className="btn">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           </button>
-
         </div>
       </header>
 
@@ -184,6 +292,19 @@ export function Detail() {
                 <span className="h-0.5 w-4 rounded border-dashed border-t border-[#a855f7]" /> 成本线
               </span>
             )}
+          </div>
+        )}
+        {period === '1d' && (
+          <div className="flex items-center gap-4 text-xs text-fg-subtle">
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-4 rounded bg-[#f59e0b]" /> 盘前
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-4 rounded bg-[#3b82f6]" /> 盘中
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-4 rounded bg-[#a855f7]" /> 盘后
+            </span>
           </div>
         )}
 
