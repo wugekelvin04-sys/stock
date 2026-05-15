@@ -98,34 +98,63 @@ export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]
 
 // ── History ───────────────────────────────────────────────────────────────────
 
-export type HistoryPeriod = '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y'
+export type HistoryPeriod = '1d' | '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y'
 
 export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'): Promise<CachedResult<HistoryBar[]>> {
   const key = `history:${symbol}:${period}`
   return withCache(key, TTL.HISTORY, async () => {
     await yahooLimiter.acquire()
+    const is1d = period === '1d'
+    const period1 = is1d
+      ? (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString().slice(0, 10) })()
+      : periodToDate(period).toISOString().slice(0, 10)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result: any = await yahooFinance.chart(symbol, {
-      period1: periodToDate(period).toISOString().slice(0, 10),
-      interval: '1d',
+      period1,
+      interval: is1d ? '5m' : '1d',
     }, { validateResult: false })
     const quotes: any[] = result?.quotes ?? []
-    return quotes.map((r) => ({
-      date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date ?? ''),
-      open: r.open ?? 0,
-      high: r.high ?? 0,
-      low: r.low ?? 0,
-      close: r.close ?? 0,
-      volume: r.volume ?? 0,
-    }))
+    return quotes
+      .filter((r) => r.close != null)
+      .map((r) => ({
+        date: r.date instanceof Date ? r.date.toISOString() : String(r.date ?? ''),
+        open: r.open ?? 0,
+        high: r.high ?? 0,
+        low: r.low ?? 0,
+        close: r.close ?? 0,
+        volume: r.volume ?? 0,
+      }))
   }, { allowStale: true })
 }
 
 function periodToDate(period: HistoryPeriod): Date {
   const d = new Date()
-  const map: Record<HistoryPeriod, number> = { '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825 }
+  const map: Record<HistoryPeriod, number> = { '1d': 1, '1mo': 30, '3mo': 90, '6mo': 180, '1y': 365, '2y': 730, '5y': 1825 }
   d.setDate(d.getDate() - map[period])
   return d
+}
+
+export async function getIntraday(symbol: string): Promise<CachedResult<HistoryBar[]>> {
+  const key = `intraday:${symbol}`
+  return withCache(key, 300, async () => {  // 5分钟缓存
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await yahooFinance.chart(symbol, {
+      period1: (() => { const d = new Date(); d.setHours(0,0,0,0); return d.toISOString().slice(0,10) })(),
+      interval: '5m',
+    }, { validateResult: false })
+    const quotes: any[] = result?.quotes ?? []
+    return quotes
+      .filter((r) => r.close != null)
+      .map((r) => ({
+        date: r.date instanceof Date ? r.date.toISOString() : String(r.date ?? ''),
+        open: r.open ?? 0,
+        high: r.high ?? 0,
+        low: r.low ?? 0,
+        close: r.close ?? 0,
+        volume: r.volume ?? 0,
+      }))
+  }, { allowStale: true })
 }
 
 // ── Options ───────────────────────────────────────────────────────────────────
@@ -166,6 +195,38 @@ function toContract(c: Record<string, unknown>, type: 'call' | 'put'): OptionCon
     impliedVolatility: Number(c.impliedVolatility ?? 0),
     openInterest: Number(c.openInterest ?? 0),
   }
+}
+
+// ── Option Dates / By Date ────────────────────────────────────────────────────
+
+export async function getOptionDates(symbol: string): Promise<string[]> {
+  try {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain: any = await yahooFinance.options(symbol as any)
+    return (chain.expirationDates ?? []).map((d: unknown) =>
+      d instanceof Date ? d.toISOString().slice(0, 10) : String(d)
+    )
+  } catch { return [] }
+}
+
+export async function getOptionsByDate(symbol: string, date: string): Promise<CachedResult<OptionContract[]>> {
+  const key = `options:${symbol}:${date}`
+  return withCache(key, TTL.OPTION_CHAIN, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detail: any = await yahooFinance.options(symbol as any, { date: new Date(date) } as any)
+    const contracts: OptionContract[] = []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const c of (detail.options?.[0]?.calls ?? []) as any[]) {
+      contracts.push(toContract(c, 'call'))
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const p of (detail.options?.[0]?.puts ?? []) as any[]) {
+      contracts.push(toContract(p, 'put'))
+    }
+    return contracts
+  }, { allowStale: true })
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────

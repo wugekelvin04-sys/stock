@@ -12,6 +12,7 @@ interface Props {
   bars: HistoryBar[]
   costBasis?: number
   height?: number
+  mode?: 'candle' | 'line'
 }
 
 function sma(bars: HistoryBar[], period: number): { time: string; value: number }[] {
@@ -34,7 +35,7 @@ const COLORS = {
   cost: '#a855f7',
 }
 
-export function PriceChart({ bars, costBasis, height = 340 }: Props) {
+export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null)
 
@@ -63,61 +64,75 @@ export function PriceChart({ bars, costBasis, height = 340 }: Props) {
     })
     chartRef.current = chart
 
-    // Candlestick
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: COLORS.up,
-      downColor: COLORS.down,
-      borderUpColor: COLORS.up,
-      borderDownColor: COLORS.down,
-      wickUpColor: COLORS.up,
-      wickDownColor: COLORS.down,
-    })
-    candleSeries.setData(
-      bars.map((b) => ({
-        time: b.date,
-        open: b.open,
-        high: b.high,
-        low: b.low,
-        close: b.close,
-      })),
-    )
-
-    // MA 20
-    if (bars.length >= 20) {
-      const ma20Series = chart.addSeries(LineSeries, {
+    if (mode === 'line') {
+      // Line chart mode (for intraday data)
+      const lineSeries = chart.addSeries(LineSeries, {
         color: COLORS.ma20,
-        lineWidth: 1,
-        title: 'MA20',
-        crosshairMarkerVisible: false,
-        lastValueVisible: false,
+        lineWidth: 2,
+        crosshairMarkerVisible: true,
+        lastValueVisible: true,
         priceLineVisible: false,
       })
-      ma20Series.setData(sma(bars, 20))
-    }
-
-    // MA 50
-    if (bars.length >= 50) {
-      const ma50Series = chart.addSeries(LineSeries, {
-        color: COLORS.ma50,
-        lineWidth: 1,
-        title: 'MA50',
-        crosshairMarkerVisible: false,
-        lastValueVisible: false,
-        priceLineVisible: false,
+      lineSeries.setData(
+        bars.map((b) => ({ time: b.date, value: b.close })),
+      )
+    } else {
+      // Candlestick mode
+      const candleSeries = chart.addSeries(CandlestickSeries, {
+        upColor: COLORS.up,
+        downColor: COLORS.down,
+        borderUpColor: COLORS.up,
+        borderDownColor: COLORS.down,
+        wickUpColor: COLORS.up,
+        wickDownColor: COLORS.down,
       })
-      ma50Series.setData(sma(bars, 50))
-    }
+      candleSeries.setData(
+        bars.map((b) => ({
+          time: b.date,
+          open: b.open,
+          high: b.high,
+          low: b.low,
+          close: b.close,
+        })),
+      )
 
-    // Cost basis line
-    if (costBasis) {
-      candleSeries.createPriceLine({
-        price: costBasis,
-        color: COLORS.cost,
-        lineWidth: 1,
-        lineStyle: 2, // dashed
-        axisLabelVisible: true,
-        title: '成本',
-      })
+      // MA 20
+      if (bars.length >= 20) {
+        const ma20Series = chart.addSeries(LineSeries, {
+          color: COLORS.ma20,
+          lineWidth: 1,
+          title: 'MA20',
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        })
+        ma20Series.setData(sma(bars, 20))
+      }
+
+      // MA 50
+      if (bars.length >= 50) {
+        const ma50Series = chart.addSeries(LineSeries, {
+          color: COLORS.ma50,
+          lineWidth: 1,
+          title: 'MA50',
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        })
+        ma50Series.setData(sma(bars, 50))
+      }
+
+      // Cost basis line
+      if (costBasis) {
+        candleSeries.createPriceLine({
+          price: costBasis,
+          color: COLORS.cost,
+          lineWidth: 1,
+          lineStyle: 2, // dashed
+          axisLabelVisible: true,
+          title: '成本',
+        })
+      }
     }
 
     chart.timeScale().fitContent()
@@ -134,7 +149,7 @@ export function PriceChart({ bars, costBasis, height = 340 }: Props) {
       chart.remove()
       chartRef.current = null
     }
-  }, [bars, costBasis, height])
+  }, [bars, costBasis, height, mode])
 
   if (bars.length === 0) {
     return (

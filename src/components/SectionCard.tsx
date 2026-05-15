@@ -1,3 +1,5 @@
+import { RefreshCw } from 'lucide-react'
+
 interface Props {
   title: string
   subtitle?: string
@@ -5,6 +7,8 @@ interface Props {
   loading?: boolean
   fromCache?: boolean
   fetchedAt?: number
+  onRefresh?: () => void
+  refreshing?: boolean
 }
 
 function timeAgo(ms: number) {
@@ -14,7 +18,7 @@ function timeAgo(ms: number) {
   return `${Math.floor(diff / 60)} 小时前`
 }
 
-export function SectionCard({ title, subtitle, children, loading, fromCache, fetchedAt }: Props) {
+export function SectionCard({ title, subtitle, children, loading, fromCache, fetchedAt, onRefresh, refreshing }: Props) {
   return (
     <div className="card flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -22,10 +26,17 @@ export function SectionCard({ title, subtitle, children, loading, fromCache, fet
           <h3 className="text-sm font-semibold text-fg">{title}</h3>
           {subtitle && <p className="text-xs text-fg-subtle">{subtitle}</p>}
         </div>
-        {fromCache && fetchedAt && (
-          <span className="text-[11px] text-fg-subtle">{timeAgo(fetchedAt)}</span>
-        )}
-        {loading && <div className="h-3 w-3 animate-spin rounded-full border-2 border-fg-subtle border-t-transparent" />}
+        <div className="flex items-center gap-1.5">
+          {fromCache && fetchedAt && (
+            <span className="text-[11px] text-fg-subtle">{timeAgo(fetchedAt)}</span>
+          )}
+          {onRefresh && (
+            <button onClick={onRefresh} disabled={refreshing} className="rounded p-1 text-fg-subtle hover:text-fg-muted transition-colors">
+              <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+            </button>
+          )}
+          {loading && <div className="h-3 w-3 animate-spin rounded-full border-2 border-fg-subtle border-t-transparent" />}
+        </div>
       </div>
       {children}
     </div>

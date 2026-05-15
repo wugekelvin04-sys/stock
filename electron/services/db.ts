@@ -60,6 +60,22 @@ function migrate(db: Database.Database) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS watchlist_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
+    CREATE TABLE IF NOT EXISTS watchlist_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_id INTEGER NOT NULL REFERENCES watchlist_groups(id) ON DELETE CASCADE,
+      symbol TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      UNIQUE(group_id, symbol)
+    );
   `)
 }
 
@@ -186,4 +202,58 @@ export function getSetting(key: string, fallback: string): string {
 
 export function setSetting(key: string, value: string) {
   getDb().prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(key, value)
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+export interface WatchGroup {
+  id: number
+  name: string
+  sortOrder: number
+}
+
+export interface WatchItem {
+  id: number
+  groupId: number
+  symbol: string
+  sortOrder: number
+}
+
+export function listWatchGroups(): WatchGroup[] {
+  return getDb()
+    .prepare(`SELECT id, name, sort_order as sortOrder FROM watchlist_groups ORDER BY sort_order, id`)
+    .all() as WatchGroup[]
+}
+
+export function addWatchGroup(name: string): WatchGroup {
+  const db = getDb()
+  const maxOrder = (db.prepare(`SELECT MAX(sort_order) as m FROM watchlist_groups`).get() as { m: number | null }).m ?? -1
+  db.prepare(`INSERT INTO watchlist_groups (name, sort_order) VALUES (?, ?)`).run(name, maxOrder + 1)
+  return db.prepare(`SELECT id, name, sort_order as sortOrder FROM watchlist_groups WHERE name = ?`).get(name) as WatchGroup
+}
+
+export function deleteWatchGroup(id: number) {
+  getDb().prepare(`DELETE FROM watchlist_groups WHERE id = ?`).run(id)
+}
+
+export function listWatchItems(groupId: number): WatchItem[] {
+  return getDb()
+    .prepare(`SELECT id, group_id as groupId, symbol, sort_order as sortOrder FROM watchlist_items WHERE group_id = ? ORDER BY sort_order, id`)
+    .all(groupId) as WatchItem[]
+}
+
+export function addWatchItem(groupId: number, symbol: string) {
+  const db = getDb()
+  const maxOrder = (db.prepare(`SELECT MAX(sort_order) as m FROM watchlist_items WHERE group_id = ?`).get(groupId) as { m: number | null }).m ?? -1
+  db.prepare(`INSERT OR IGNORE INTO watchlist_items (group_id, symbol, sort_order) VALUES (?, ?, ?)`).run(groupId, symbol.toUpperCase(), maxOrder + 1)
+}
+
+export function removeWatchItem(groupId: number, symbol: string) {
+  getDb().prepare(`DELETE FROM watchlist_items WHERE group_id = ? AND symbol = ?`).run(groupId, symbol.toUpperCase())
+}
+
+export function isWatched(symbol: string): { groupId: number; groupName: string }[] {
+  return getDb()
+    .prepare(`SELECT wi.group_id as groupId, wg.name as groupName FROM watchlist_items wi JOIN watchlist_groups wg ON wg.id = wi.group_id WHERE wi.symbol = ?`)
+    .all(symbol.toUpperCase()) as { groupId: number; groupName: string }[]
 }

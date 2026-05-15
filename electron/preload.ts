@@ -19,6 +19,9 @@ const api = {
     gainers: () => ipcRenderer.invoke('market:gainers') as Promise<CachedResult<ScreenerItem[]>>,
     losers: () => ipcRenderer.invoke('market:losers') as Promise<CachedResult<ScreenerItem[]>>,
     news: (symbol: string) => ipcRenderer.invoke('market:news', symbol) as Promise<CachedResult<NewsItem[]>>,
+    intraday: (symbol: string) => ipcRenderer.invoke('market:intraday', symbol) as Promise<CachedResult<HistoryBar[]>>,
+    optionDates: (symbol: string) => ipcRenderer.invoke('market:option-dates', symbol) as Promise<string[]>,
+    optionsByDate: (symbol: string, date: string) => ipcRenderer.invoke('market:options-by-date', symbol, date) as Promise<CachedResult<import('./services/market').OptionContract[]>>,
   },
 
   // ── Portfolio ──────────────────────────────────────────────────────────────
@@ -57,6 +60,17 @@ const api = {
       ipcRenderer.on('scheduler:daily-picks-updated', h)
       return () => ipcRenderer.off('scheduler:daily-picks-updated', h)
     },
+  },
+
+  // ── Watchlist ──────────────────────────────────────────────────────────────
+  watchlist: {
+    listGroups: () => ipcRenderer.invoke('watchlist:list-groups') as Promise<import('./services/db').WatchGroup[]>,
+    addGroup: (name: string) => ipcRenderer.invoke('watchlist:add-group', name) as Promise<import('./services/db').WatchGroup>,
+    deleteGroup: (id: number) => ipcRenderer.invoke('watchlist:delete-group', id) as Promise<{ ok: boolean }>,
+    listItems: (groupId: number) => ipcRenderer.invoke('watchlist:list-items', groupId) as Promise<import('./services/db').WatchItem[]>,
+    addItem: (groupId: number, symbol: string) => ipcRenderer.invoke('watchlist:add-item', groupId, symbol) as Promise<{ ok: boolean }>,
+    removeItem: (groupId: number, symbol: string) => ipcRenderer.invoke('watchlist:remove-item', groupId, symbol) as Promise<{ ok: boolean }>,
+    isWatched: (symbol: string) => ipcRenderer.invoke('watchlist:is-watched', symbol) as Promise<{ groupId: number; groupName: string }[]>,
   },
 
   // ── Shell ──────────────────────────────────────────────────────────────────

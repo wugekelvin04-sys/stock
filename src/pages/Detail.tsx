@@ -3,12 +3,15 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, ExternalLink } from 'lucide-react'
 import { PriceChart } from '../components/PriceChart'
 import { AnalysisPanel } from '../components/AnalysisPanel'
+import { OptionsChain } from '../components/OptionsChain'
 import { usePortfolioStore } from '../stores/portfolio'
 import { toast } from '../stores/toast'
 import type { HistoryBar, Quote, NewsItem, CachedResult } from '../../electron/services/market'
 
-type Period = '1mo' | '3mo' | '6mo' | '1y' | '2y'
+type Period = '1d' | '1w' | '1mo' | '3mo' | '6mo' | '1y' | '2y'
 const PERIODS: { label: string; value: Period }[] = [
+  { label: '今天', value: '1d' },
+  { label: '本周', value: '1w' },
   { label: '1月', value: '1mo' },
   { label: '3月', value: '3mo' },
   { label: '6月', value: '6mo' },
@@ -32,7 +35,7 @@ export function Detail() {
   const navigate = useNavigate()
   const { holdings } = usePortfolioStore()
 
-  const [period, setPeriod] = useState<Period>('6mo')
+  const [period, setPeriod] = useState<Period>('1w')
   const [bars, setBars] = useState<HistoryBar[]>([])
   const [quote, setQuote] = useState<Quote | null>(null)
   const [news, setNews] = useState<NewsItem[]>([])
@@ -48,8 +51,18 @@ export function Detail() {
     if (!symbol) return
     setLoading(true)
     try {
+      let histPromise: Promise<CachedResult<HistoryBar[]>>
+      if (p === '1d') {
+        histPromise = window.api.market.intraday(symbol) as Promise<CachedResult<HistoryBar[]>>
+      } else if (p === '1w') {
+        histPromise = (window.api.market.history(symbol, '1mo') as Promise<CachedResult<HistoryBar[]>>).then(
+          (res) => ({ ...res, data: res.data?.slice(-5) ?? [] }),
+        )
+      } else {
+        histPromise = window.api.market.history(symbol, p) as Promise<CachedResult<HistoryBar[]>>
+      }
       const [histRes, quoteRes, newsRes] = await Promise.all([
-        window.api.market.history(symbol, p) as Promise<CachedResult<HistoryBar[]>>,
+        histPromise,
         window.api.market.quotes([symbol]) as Promise<CachedResult<Quote[]>>,
         window.api.market.news(symbol) as Promise<CachedResult<NewsItem[]>>,
       ])
@@ -118,6 +131,7 @@ export function Detail() {
           <button onClick={() => load(period)} disabled={loading} className="btn">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           </button>
+
         </div>
       </header>
 
@@ -151,24 +165,27 @@ export function Detail() {
               bars={bars}
               costBasis={holding?.costBasis}
               height={340}
+              mode={period === '1d' ? 'line' : 'candle'}
             />
           )}
         </div>
 
         {/* Chart legend */}
-        <div className="flex items-center gap-4 text-xs text-fg-subtle">
-          <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-4 rounded bg-[#3b82f6]" /> MA20
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-0.5 w-4 rounded bg-[#f59e0b]" /> MA50
-          </span>
-          {holding && (
+        {period !== '1d' && (
+          <div className="flex items-center gap-4 text-xs text-fg-subtle">
             <span className="flex items-center gap-1.5">
-              <span className="h-0.5 w-4 rounded border-dashed border-t border-[#a855f7]" /> 成本线
+              <span className="h-0.5 w-4 rounded bg-[#3b82f6]" /> MA20
             </span>
-          )}
-        </div>
+            <span className="flex items-center gap-1.5">
+              <span className="h-0.5 w-4 rounded bg-[#f59e0b]" /> MA50
+            </span>
+            {holding && (
+              <span className="flex items-center gap-1.5">
+                <span className="h-0.5 w-4 rounded border-dashed border-t border-[#a855f7]" /> 成本线
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Quote stats */}
         {quote && (
@@ -210,6 +227,9 @@ export function Detail() {
 
         {/* AI Analysis */}
         {symbol && <AnalysisPanel symbol={symbol} context={analysisContext} />}
+
+        {/* Options Chain */}
+        {symbol && <OptionsChain symbol={symbol} currentPrice={quote?.price} />}
 
         {/* News */}
         {news.length > 0 && (

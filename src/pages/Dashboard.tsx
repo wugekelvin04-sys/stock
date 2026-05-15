@@ -14,7 +14,25 @@ export function Dashboard() {
   const [losers, setLosers] = useState<CachedResult<ScreenerItem[]> | null>(null)
   const [picks, setPicks] = useState<DailyPicksResult | null>(null)
   const [loading, setLoading] = useState(false)
+  const [gainersRefreshing, setGainersRefreshing] = useState(false)
+  const [losersRefreshing, setLosersRefreshing] = useState(false)
+  const [picksRefreshing, setPicksRefreshing] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | null>(null)
+  const [sparklines, setSparklines] = useState<Record<string, number[]>>({})
+
+  async function loadSparklines(symbols: string[]) {
+    const limited = symbols.slice(0, 10)
+    for (const sym of limited) {
+      try {
+        const result = await window.api.market.intraday(sym)
+        if (result?.data?.length) {
+          setSparklines(prev => ({ ...prev, [sym]: result.data.map(b => b.close) }))
+        }
+      } catch {
+        // silently ignore intraday failures
+      }
+    }
+  }
 
   const load = async () => {
     setLoading(true)
@@ -28,6 +46,13 @@ export function Dashboard() {
       setLosers(l)
       if (p) setPicks(p)
       setLastRefresh(Date.now())
+
+      // Load sparklines for all gainers + losers (up to 10 symbols total)
+      const symbols = [
+        ...(g?.data ?? []).map(i => i.symbol),
+        ...(l?.data ?? []).map(i => i.symbol),
+      ]
+      void loadSparklines(symbols)
     } catch (e) {
       const msg = (e as Error).message ?? String(e)
       if (msg.includes('rate') || msg.includes('429')) {
@@ -37,6 +62,49 @@ export function Dashboard() {
       }
     } finally {
       setLoading(false)
+    }
+  }
+
+  const refreshGainers = async () => {
+    setGainersRefreshing(true)
+    try {
+      const g = await window.api.market.gainers()
+      setGainers(g)
+      setLastRefresh(Date.now())
+      void loadSparklines((g?.data ?? []).map(i => i.symbol))
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      toast.error(`涨幅榜刷新失败: ${msg.slice(0, 60)}`, '网络错误')
+    } finally {
+      setGainersRefreshing(false)
+    }
+  }
+
+  const refreshLosers = async () => {
+    setLosersRefreshing(true)
+    try {
+      const l = await window.api.market.losers()
+      setLosers(l)
+      setLastRefresh(Date.now())
+      void loadSparklines((l?.data ?? []).map(i => i.symbol))
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      toast.error(`跌幅榜刷新失败: ${msg.slice(0, 60)}`, '网络错误')
+    } finally {
+      setLosersRefreshing(false)
+    }
+  }
+
+  const refreshPicks = async () => {
+    setPicksRefreshing(true)
+    try {
+      const p = await window.api.insight.dailyPicks()
+      if (p) setPicks(p)
+    } catch (e) {
+      const msg = (e as Error).message ?? String(e)
+      toast.error(`机会榜刷新失败: ${msg.slice(0, 60)}`, '网络错误')
+    } finally {
+      setPicksRefreshing(false)
     }
   }
 
@@ -85,6 +153,8 @@ export function Dashboard() {
             loading={loading && !gainers}
             fromCache={gainers?.fromCache}
             fetchedAt={gainers?.fetchedAt}
+            onRefresh={refreshGainers}
+            refreshing={gainersRefreshing}
           >
             {gainers?.data.length ? (
               <div className="-mx-1 space-y-0.5">
@@ -97,6 +167,7 @@ export function Dashboard() {
                     price={item.price}
                     changePercent={item.changePercent}
                     volume={item.volume}
+                    sparkPrices={sparklines[item.symbol]}
                   />
                 ))}
               </div>
@@ -112,6 +183,8 @@ export function Dashboard() {
             loading={loading && !losers}
             fromCache={losers?.fromCache}
             fetchedAt={losers?.fetchedAt}
+            onRefresh={refreshLosers}
+            refreshing={losersRefreshing}
           >
             {losers?.data.length ? (
               <div className="-mx-1 space-y-0.5">
@@ -124,6 +197,7 @@ export function Dashboard() {
                     price={item.price}
                     changePercent={item.changePercent}
                     volume={item.volume}
+                    sparkPrices={sparklines[item.symbol]}
                   />
                 ))}
               </div>
@@ -136,6 +210,8 @@ export function Dashboard() {
           <SectionCard
             title="今日机会榜"
             subtitle={picks ? `AI 精选 · ${picks.date}` : '每日 09:00 ET 开盘前 AI 筛选'}
+            onRefresh={refreshPicks}
+            refreshing={picksRefreshing}
           >
             {picks?.picks.length ? (
               <div className="-mx-1 space-y-0.5">

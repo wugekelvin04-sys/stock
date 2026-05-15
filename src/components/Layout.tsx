@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Briefcase, Search, Settings } from 'lucide-react'
+import { LayoutDashboard, Briefcase, Star, Search, Settings } from 'lucide-react'
 import { SearchBar } from './SearchBar'
 import { useEffect, useState } from 'react'
 import { toast } from '../stores/toast'
@@ -7,6 +7,7 @@ import { toast } from '../stores/toast'
 const NAV = [
   { to: '/', icon: LayoutDashboard, label: '市场' },
   { to: '/portfolio', icon: Briefcase, label: '持仓' },
+  { to: '/watchlist', icon: Star, label: '自选' },
 ]
 
 export function Layout() {

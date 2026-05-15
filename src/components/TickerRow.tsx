@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { TrendingUp, TrendingDown } from 'lucide-react'
+import { MiniSparkline } from './MiniSparkline'
 
 interface Props {
   rank: number
@@ -9,6 +10,7 @@ interface Props {
   changePercent: number
   volume?: number
   reason?: string
+  sparkPrices?: number[]
 }
 
 function fmt(n: number, digits = 2) {
@@ -22,14 +24,14 @@ function fmtVol(n: number) {
   return String(n)
 }
 
-export function TickerRow({ rank, symbol, name, price, changePercent, volume, reason }: Props) {
+export function TickerRow({ rank, symbol, name, price, changePercent, volume, reason, sparkPrices }: Props) {
   const navigate = useNavigate()
   const up = changePercent >= 0
 
   return (
     <div
       onClick={() => navigate(`/detail/${symbol}`)}
-      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors hover:bg-bg-subtle"
+      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-1.5 transition-colors hover:bg-bg-subtle"
     >
       <span className="w-5 text-center text-xs font-mono text-fg-subtle">{rank}</span>
 
@@ -48,6 +50,10 @@ export function TickerRow({ rank, symbol, name, price, changePercent, volume, re
           {up ? '+' : ''}{fmt(changePercent)}%
         </div>
       </div>
+
+      {sparkPrices && sparkPrices.length > 1 && (
+        <MiniSparkline prices={sparkPrices} up={changePercent >= 0} />
+      )}
 
       {volume !== undefined && (
         <span className="w-14 text-right text-xs text-fg-subtle">{fmtVol(volume)}</span>

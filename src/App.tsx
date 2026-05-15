@@ -5,6 +5,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Portfolio } from './pages/Portfolio'
 import { Detail } from './pages/Detail'
 import { Settings } from './pages/Settings'
+import { Watchlist } from './pages/Watchlist'
 import { ToastContainer } from './components/Toast'
 
 const queryClient = new QueryClient({
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="portfolio" element={<Portfolio />} />
             <Route path="detail/:symbol" element={<Detail />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="watchlist" element={<Watchlist />} />
           </Route>
         </Routes>
         <ToastContainer />
