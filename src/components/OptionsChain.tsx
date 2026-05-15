@@ -7,21 +7,18 @@ interface Props {
   currentPrice?: number
 }
 
-function fmtOI(n: number): string {
-  if (n >= 10000) return `${(n / 1000).toFixed(0)}K`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
+function fmtVol(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`
   return String(n)
 }
 
 function fmtIV(iv: number): string {
+  if (iv <= 0) return '—'
   return `${(iv * 100).toFixed(0)}%`
 }
 
-interface StrikeRow {
-  strike: number
-  call?: OptionContract
-  put?: OptionContract
-}
+type Side = 'call' | 'put'
 
 export function OptionsChain({ symbol, currentPrice }: Props) {
   const [expanded, setExpanded] = useState(false)
@@ -31,9 +28,9 @@ export function OptionsChain({ symbol, currentPrice }: Props) {
   const [datesLoading, setDatesLoading] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [side, setSide] = useState<Side>('call')
   const datesScrollRef = useRef<HTMLDivElement>(null)
 
-  // Load option dates when expanded
   useEffect(() => {
     if (!expanded || dates.length > 0) return
     setDatesLoading(true)
@@ -43,46 +40,28 @@ export function OptionsChain({ symbol, currentPrice }: Props) {
         setDates(d)
         if (d.length > 0) setSelectedDate(d[0])
       })
-      .catch(() => {
-        setError('获取失败，请稍后重试')
-      })
+      .catch(() => setError('获取失败，请稍后重试'))
       .finally(() => setDatesLoading(false))
   }, [expanded, symbol, dates.length])
 
-  // Load contracts when date changes
   useEffect(() => {
     if (!selectedDate) return
     setLoading(true)
     setError(null)
     ;(window.api.market.optionsByDate(symbol, selectedDate) as Promise<CachedResult<OptionContract[]>>)
-      .then((res) => {
-        setContracts(res.data ?? [])
-      })
-      .catch(() => {
-        setError('获取失败，请稍后重试')
-      })
+      .then((res) => setContracts(res.data ?? []))
+      .catch(() => setError('获取失败，请稍后重试'))
       .finally(() => setLoading(false))
   }, [symbol, selectedDate])
 
-  // Build strike rows
-  const strikeRows: StrikeRow[] = (() => {
-    const map = new Map<number, StrikeRow>()
-    for (const c of contracts) {
-      const row = map.get(c.strike) ?? { strike: c.strike }
-      if (c.type === 'call') row.call = c
-      else row.put = c
-      map.set(c.strike, row)
-    }
-    return Array.from(map.values()).sort((a, b) => a.strike - b.strike)
-  })()
+  const rows = contracts
+    .filter((c) => c.type === side)
+    .sort((a, b) => b.strike - a.strike)
 
-  // ATM strike index
   const atmStrike = currentPrice
-    ? strikeRows.reduce<number | null>((best, row) => {
-        if (best === null) return row.strike
-        return Math.abs(row.strike - currentPrice) < Math.abs(best - currentPrice)
-          ? row.strike
-          : best
+    ? rows.reduce<number | null>((best, r) => {
+        if (best === null) return r.strike
+        return Math.abs(r.strike - currentPrice) < Math.abs(best - currentPrice) ? r.strike : best
       }, null)
     : null
 
@@ -93,130 +72,111 @@ export function OptionsChain({ symbol, currentPrice }: Props) {
         onClick={() => setExpanded((v) => !v)}
       >
         <h3 className="text-xs font-semibold uppercase tracking-wider text-fg-muted">期权链</h3>
-        {expanded ? (
-          <ChevronDown size={14} className="text-fg-subtle" />
-        ) : (
-          <ChevronRight size={14} className="text-fg-subtle" />
-        )}
+        {expanded ? <ChevronDown size={14} className="text-fg-subtle" /> : <ChevronRight size={14} className="text-fg-subtle" />}
       </button>
 
       {expanded && (
-        <div className="mt-3">
-          {/* Date tabs */}
+        <div className="mt-3 space-y-3">
           {datesLoading && (
             <div className="flex items-center justify-center py-6">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-fg-subtle border-t-transparent" />
             </div>
           )}
-
-          {!datesLoading && error && (
-            <p className="py-4 text-center text-xs text-fg-subtle">{error}</p>
-          )}
-
-          {!datesLoading && !error && dates.length === 0 && (
-            <p className="py-4 text-center text-xs text-fg-subtle">暂无期权数据</p>
-          )}
+          {!datesLoading && error && <p className="py-4 text-center text-xs text-fg-subtle">{error}</p>}
+          {!datesLoading && !error && dates.length === 0 && <p className="py-4 text-center text-xs text-fg-subtle">暂无期权数据</p>}
 
           {!datesLoading && dates.length > 0 && (
             <>
-              {/* Scrollable date tabs */}
+              {/* Expiry date tabs */}
               <div
                 ref={datesScrollRef}
-                className="flex gap-1 overflow-x-auto pb-2 scrollbar-none"
+                className="flex gap-1 overflow-x-auto pb-1"
                 style={{ scrollbarWidth: 'none' }}
               >
-                {dates.slice(0, 8).map((d) => (
+                {dates.map((d) => (
                   <button
                     key={d}
                     onClick={() => setSelectedDate(d)}
                     className={`shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                      selectedDate === d
-                        ? 'bg-accent/15 text-accent'
-                        : 'text-fg-subtle hover:bg-bg-subtle hover:text-fg-muted'
+                      selectedDate === d ? 'bg-accent/15 text-accent' : 'text-fg-subtle hover:bg-bg-subtle hover:text-fg-muted'
                     }`}
                   >
-                    {d}
+                    {d.slice(5)} {/* MM-DD */}
                   </button>
                 ))}
-                {dates.length > 8 && (
-                  <>
-                    {dates.slice(8).map((d) => (
-                      <button
-                        key={d}
-                        onClick={() => setSelectedDate(d)}
-                        className={`shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                          selectedDate === d
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-fg-subtle hover:bg-bg-subtle hover:text-fg-muted'
-                        }`}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </>
-                )}
               </div>
 
-              {/* Table */}
+              {/* Call / Put toggle */}
+              <div className="flex gap-1 rounded-lg bg-bg p-0.5 w-fit">
+                <button
+                  onClick={() => setSide('call')}
+                  className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
+                    side === 'call' ? 'bg-accent-up/15 text-accent-up' : 'text-fg-subtle hover:text-fg-muted'
+                  }`}
+                >
+                  Call 看涨
+                </button>
+                <button
+                  onClick={() => setSide('put')}
+                  className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
+                    side === 'put' ? 'bg-accent-down/15 text-accent-down' : 'text-fg-subtle hover:text-fg-muted'
+                  }`}
+                >
+                  Put 看跌
+                </button>
+              </div>
+
               {loading && (
                 <div className="flex items-center justify-center py-6">
                   <div className="h-4 w-4 animate-spin rounded-full border-2 border-fg-subtle border-t-transparent" />
                 </div>
               )}
 
-              {!loading && strikeRows.length === 0 && (
-                <p className="py-4 text-center text-xs text-fg-subtle">暂无期权数据</p>
-              )}
+              {!loading && rows.length === 0 && <p className="py-4 text-center text-xs text-fg-subtle">暂无数据</p>}
 
-              {!loading && strikeRows.length > 0 && (
-                <div className="mt-2 overflow-x-auto">
+              {!loading && rows.length > 0 && (
+                <div className="overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead>
-                      <tr className="border-b border-border">
-                        {/* Call header */}
-                        <th className="pb-1.5 pl-0 pr-2 text-left font-medium text-accent-up">Last</th>
-                        <th className="pb-1.5 px-2 text-left font-medium text-accent-up">IV</th>
-                        <th className="pb-1.5 px-2 text-left font-medium text-accent-up">OI</th>
-                        {/* Strike */}
-                        <th className="pb-1.5 px-3 text-center font-semibold text-fg-muted">Strike</th>
-                        {/* Put header */}
-                        <th className="pb-1.5 px-2 text-right font-medium text-accent-down">Last</th>
-                        <th className="pb-1.5 px-2 text-right font-medium text-accent-down">IV</th>
-                        <th className="pb-1.5 pl-2 pr-0 text-right font-medium text-accent-down">OI</th>
+                      <tr className="border-b border-border text-fg-subtle">
+                        <th className="pb-1.5 text-left font-medium">行权价</th>
+                        <th className="pb-1.5 text-right font-medium">最新价</th>
+                        <th className="pb-1.5 text-right font-medium">今日量</th>
+                        <th className="pb-1.5 text-right font-medium">隐含波动率</th>
+                        <th className="pb-1.5 text-right font-medium">持仓量</th>
+                        <th className="pb-1.5 text-right font-medium">实/虚值</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {strikeRows.map((row) => {
-                        const isAtm = atmStrike !== null && row.strike === atmStrike
+                      {rows.map((c) => {
+                        const isAtm = atmStrike !== null && c.strike === atmStrike
+                        const itm = c.inTheMoney
                         return (
                           <tr
-                            key={row.strike}
-                            className={`border-b border-border/50 ${isAtm ? 'bg-accent/5' : ''}`}
+                            key={c.contractSymbol}
+                            className={`border-b border-border/40 transition-colors hover:bg-bg-subtle ${isAtm ? 'bg-accent/5' : ''}`}
                           >
-                            {/* Call side */}
-                            <td className="py-1 pl-0 pr-2 font-mono text-accent-up">
-                              {row.call ? row.call.lastPrice.toFixed(2) : '—'}
+                            <td className={`py-1.5 font-mono font-semibold ${isAtm ? 'text-accent' : 'text-fg'}`}>
+                              {isAtm && <span className="mr-1 text-accent text-[10px]">ATM</span>}
+                              ${c.strike}
                             </td>
-                            <td className="py-1 px-2 text-fg-muted">
-                              {row.call ? fmtIV(row.call.impliedVolatility) : '—'}
+                            <td className={`py-1.5 text-right font-mono ${side === 'call' ? 'text-accent-up' : 'text-accent-down'}`}>
+                              {c.lastPrice > 0 ? `$${c.lastPrice.toFixed(2)}` : '—'}
                             </td>
-                            <td className="py-1 px-2 text-fg-muted">
-                              {row.call ? fmtOI(row.call.openInterest) : '—'}
+                            <td className="py-1.5 text-right font-mono text-fg">
+                              {c.volume > 0 ? fmtVol(c.volume) : '—'}
                             </td>
-                            {/* Strike */}
-                            <td className={`py-1 px-3 text-center font-mono font-semibold ${isAtm ? 'text-accent' : 'text-fg'}`}>
-                              {isAtm && <span className="mr-1 text-accent">◆</span>}
-                              {row.strike}
+                            <td className="py-1.5 text-right font-mono text-fg-muted">
+                              {fmtIV(c.impliedVolatility)}
                             </td>
-                            {/* Put side */}
-                            <td className="py-1 px-2 text-right font-mono text-accent-down">
-                              {row.put ? row.put.lastPrice.toFixed(2) : '—'}
+                            <td className="py-1.5 text-right font-mono text-fg-muted">
+                              {c.openInterest > 0 ? fmtVol(c.openInterest) : '—'}
                             </td>
-                            <td className="py-1 px-2 text-right text-fg-muted">
-                              {row.put ? fmtIV(row.put.impliedVolatility) : '—'}
-                            </td>
-                            <td className="py-1 pl-2 pr-0 text-right text-fg-muted">
-                              {row.put ? fmtOI(row.put.openInterest) : '—'}
+                            <td className="py-1.5 text-right">
+                              {itm
+                                ? <span className="rounded px-1 py-0.5 text-[10px] bg-accent-up/10 text-accent-up">实值</span>
+                                : <span className="rounded px-1 py-0.5 text-[10px] bg-bg-subtle text-fg-subtle">虚值</span>
+                              }
                             </td>
                           </tr>
                         )

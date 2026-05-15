@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { Zap, Square, AlertCircle } from 'lucide-react'
-import type { AnalysisContext } from '../../electron/services/claude'
+import { Zap, Square, AlertCircle, TrendingUp, Phone, BarChart2 } from 'lucide-react'
+import type { AnalysisContext, AnalysisMode } from '../../electron/services/claude'
 
 interface Props {
   symbol: string
@@ -9,7 +9,13 @@ interface Props {
 
 type Status = 'idle' | 'running' | 'done' | 'error'
 
-// Parse markdown-style ## headings into sections for styled display
+const QUICK_MODES: { mode: AnalysisMode; label: string; icon: React.ReactNode; desc: string }[] = [
+  { mode: 'why',   label: '今日归因', icon: <BarChart2 size={11} />, desc: '为什么今天涨/跌' },
+  { mode: 'call',  label: 'Call 建议', icon: <Phone size={11} />,    desc: '买 Call 的行权价和时机' },
+  { mode: 'trend', label: '趋势预测', icon: <TrendingUp size={11} />, desc: '短中期方向预测' },
+  { mode: 'full',  label: '深度分析', icon: <Zap size={11} />,        desc: '完整多维度分析' },
+]
+
 function renderMarkdown(text: string) {
   const lines = text.split('\n')
   const elements: React.ReactNode[] = []
@@ -28,6 +34,16 @@ function renderMarkdown(text: string) {
           {line.slice(4)}
         </h5>
       )
+    } else if (line.match(/^\*\*(.+)\*\*:/)) {
+      elements.push(
+        <p key={key++} className="text-sm text-fg leading-relaxed">
+          {line.split(/(\*\*[^*]+\*\*)/).map((part, i) =>
+            part.startsWith('**') && part.endsWith('**')
+              ? <strong key={i} className="text-fg font-semibold">{part.slice(2, -2)}</strong>
+              : part
+          )}
+        </p>
+      )
     } else if (line.match(/^[-*] /)) {
       elements.push(
         <li key={key++} className="ml-3 text-sm text-fg-muted list-disc">
@@ -39,6 +55,12 @@ function renderMarkdown(text: string) {
         <li key={key++} className="ml-3 text-sm text-fg-muted list-decimal">
           {line.replace(/^\d+\. /, '')}
         </li>
+      )
+    } else if (line.startsWith('> ')) {
+      elements.push(
+        <p key={key++} className="text-xs text-fg-subtle italic pl-2 border-l border-border my-0.5">
+          {line.slice(2)}
+        </p>
       )
     } else if (line.trim() === '') {
       elements.push(<div key={key++} className="h-1" />)
@@ -58,31 +80,31 @@ export function AnalysisPanel({ symbol, context }: Props) {
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [activeMode, setActiveMode] = useState<AnalysisMode | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const unsubRef = useRef<(() => void) | null>(null)
 
-  // auto-scroll as tokens stream in
   useEffect(() => {
     if (status === 'running') {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [text, status])
 
-  // cleanup on unmount
+  const sessionIdRef = useRef<string | null>(null)
+  useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
   useEffect(() => {
     return () => {
       unsubRef.current?.()
-      if (sessionId) window.api.analysis.cancel(sessionId).catch(() => {})
+      if (sessionIdRef.current) window.api.analysis.cancel(sessionIdRef.current).catch(() => {})
     }
-  }, [sessionId])
+  }, [])
 
-  const start = async () => {
+  const start = async (mode: AnalysisMode) => {
     if (status === 'running') return
+    setActiveMode(mode)
     setText('')
     setError('')
     setStatus('running')
-
-    // unsubscribe any previous listener
     unsubRef.current?.()
 
     const unsub = window.api.analysis.onChunk((chunk) => {
@@ -98,7 +120,7 @@ export function AnalysisPanel({ symbol, context }: Props) {
     unsubRef.current = unsub
 
     try {
-      const { sessionId: sid } = await window.api.analysis.start(symbol, context)
+      const { sessionId: sid } = await window.api.analysis.start(symbol, context, mode)
       setSessionId(sid)
     } catch (e) {
       setError((e as Error).message)
@@ -122,31 +144,45 @@ export function AnalysisPanel({ symbol, context }: Props) {
           {status === 'running' && (
             <span className="flex items-center gap-1 text-xs text-fg-subtle">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
-              分析中…
+              {QUICK_MODES.find(m => m.mode === activeMode)?.label ?? '分析中'}…
             </span>
           )}
           {status === 'done' && (
             <span className="text-xs text-accent-up">完成</span>
           )}
         </div>
-        <div className="flex gap-2">
-          {status === 'running' ? (
-            <button onClick={cancel} className="btn flex items-center gap-1.5 text-xs">
-              <Square size={11} />
-              停止
-            </button>
-          ) : (
-            <button onClick={start} className="btn btn-primary flex items-center gap-1.5 text-xs">
-              <Zap size={11} />
-              {status === 'idle' ? '一键分析' : '重新分析'}
-            </button>
-          )}
-        </div>
+        {status === 'running' && (
+          <button onClick={cancel} className="btn flex items-center gap-1.5 text-xs">
+            <Square size={11} />
+            停止
+          </button>
+        )}
       </div>
 
+      {/* Quick mode buttons */}
+      {status !== 'running' && (
+        <div className="grid grid-cols-4 gap-1.5">
+          {QUICK_MODES.map(({ mode, label, icon, desc }) => (
+            <button
+              key={mode}
+              onClick={() => start(mode)}
+              title={desc}
+              className={`flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-xs transition-colors hover:bg-bg-subtle
+                ${activeMode === mode && status === 'done'
+                  ? 'border-accent/40 bg-accent/5 text-accent'
+                  : 'border-border text-fg-subtle hover:text-fg-muted'
+                }`}
+            >
+              {icon}
+              <span>{label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {status === 'idle' && (
-        <p className="py-4 text-center text-xs text-fg-subtle">
-          点击"一键分析"让 Claude 对 {symbol} 做深度解读
+        <p className="text-center text-xs text-fg-subtle">
+          选择分析类型，Claude 会实时搜索后回答
         </p>
       )}
 

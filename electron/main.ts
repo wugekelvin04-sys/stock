@@ -12,10 +12,10 @@ let isQuitting = false
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1440,
+    height: 860,
     minWidth: 960,
-    minHeight: 600,
+    minHeight: 620,
     backgroundColor: '#0b0d12',
     titleBarStyle: 'hiddenInset',
     show: false,

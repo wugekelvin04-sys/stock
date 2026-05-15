@@ -27,6 +27,26 @@ export interface Quote {
   volume: number
   marketCap?: number
   fetchedAt: number
+  // extended fields
+  open?: number
+  dayHigh?: number
+  dayLow?: number
+  previousClose?: number
+  fiftyTwoWeekHigh?: number
+  fiftyTwoWeekLow?: number
+  avgVolume3M?: number
+  trailingPE?: number
+  forwardPE?: number
+  eps?: number
+  dividendYield?: number
+  bid?: number
+  ask?: number
+  preMarketPrice?: number
+  preMarketChange?: number
+  postMarketPrice?: number
+  postMarketChange?: number
+  analystRating?: string
+  marketState?: string
 }
 
 export interface HistoryBar {
@@ -48,6 +68,8 @@ export interface OptionContract {
   ask: number
   impliedVolatility: number
   openInterest: number
+  volume: number
+  inTheMoney?: boolean
   delta?: number
 }
 
@@ -64,6 +86,21 @@ export interface ScreenerItem {
   price: number
   changePercent: number
   volume: number
+}
+
+export interface SectorItem {
+  symbol: string   // ETF ticker
+  name: string     // sector name
+  price: number
+  changePercent: number
+}
+
+export interface IndexItem {
+  symbol: string
+  name: string
+  price: number
+  change: number
+  changePercent: number
 }
 
 export interface CachedResult<T> {
@@ -92,6 +129,25 @@ export async function getQuotes(symbols: string[]): Promise<CachedResult<Quote[]
       volume: q.regularMarketVolume ?? 0,
       marketCap: q.marketCap,
       fetchedAt: Date.now(),
+      open: q.regularMarketOpen,
+      dayHigh: q.regularMarketDayHigh,
+      dayLow: q.regularMarketDayLow,
+      previousClose: q.regularMarketPreviousClose,
+      fiftyTwoWeekHigh: q.fiftyTwoWeekHigh,
+      fiftyTwoWeekLow: q.fiftyTwoWeekLow,
+      avgVolume3M: q.averageDailyVolume3Month,
+      trailingPE: q.trailingPE,
+      forwardPE: q.forwardPE,
+      eps: q.epsTrailingTwelveMonths,
+      dividendYield: q.dividendYield,
+      bid: q.bid,
+      ask: q.ask,
+      preMarketPrice: q.preMarketPrice,
+      preMarketChange: q.preMarketChange,
+      postMarketPrice: q.postMarketPrice,
+      postMarketChange: q.postMarketChange,
+      analystRating: q.averageAnalystRating,
+      marketState: q.marketState,
     })) as Quote[]
   }, { allowStale: true })
 }
@@ -132,16 +188,14 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
   }, { allowStale: true })
 }
 
-/**
- * TTL strategy for history cache keys:
- * - 1d (intraday 5m): 5 min — market is live
- * - 1mo: 2 h — contains today's bar (may update at close)
- * - 3mo+: 24 h — all bars are fully settled, data is static
- */
 function historyCacheTTL(period: HistoryPeriod): number {
-  if (period === '1d') return TTL.QUOTE      // 5 min  — 日内实时
-  if (period === '1mo') return TTL.HISTORY   // 4 h    — 含今日未收盘 bar
-  return TTL.IMMUTABLE                       // 30 天  — 全部已收盘，数据不再变化
+  if (period === '1d') return TTL.QUOTE   // 5 min — 日内分钟线，实时刷新
+  // 1mo 含今日 bar；收盘后（ET 16:00+）今日 bar 也定了，走永久缓存
+  if (period === '1mo') {
+    const etHour = parseInt(new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/New_York' }), 10)
+    return etHour >= 16 ? TTL.IMMUTABLE : TTL.HISTORY
+  }
+  return TTL.IMMUTABLE  // 3mo+ 全部已收盘，永久缓存
 }
 
 function periodToDate(period: HistoryPeriod): Date {
@@ -159,6 +213,37 @@ export async function getIntraday(symbol: string): Promise<CachedResult<HistoryB
     const result: any = await yahooFinance.chart(symbol, {
       period1: (() => { const d = new Date(); d.setHours(0,0,0,0); return d.toISOString().slice(0,10) })(),
       interval: '5m',
+      includePrePost: true,
+    }, { validateResult: false })
+    const quotes: any[] = result?.quotes ?? []
+    return quotes
+      .filter((r) => r.close != null)
+      .map((r) => ({
+        date: r.date instanceof Date ? r.date.toISOString() : String(r.date ?? ''),
+        open: r.open ?? 0,
+        high: r.high ?? 0,
+        low: r.low ?? 0,
+        close: r.close ?? 0,
+        volume: r.volume ?? 0,
+      }))
+  }, { allowStale: true })
+}
+
+export async function getPrevDayIntraday(symbol: string): Promise<CachedResult<HistoryBar[]>> {
+  // Find last trading day (skip weekends)
+  const prev = new Date()
+  prev.setHours(0, 0, 0, 0)
+  do { prev.setDate(prev.getDate() - 1) } while (prev.getDay() === 0 || prev.getDay() === 6)
+  const dateStr = prev.toISOString().slice(0, 10)
+  const key = `intraday-prev:${symbol}:${dateStr}`
+  return withCache(key, TTL.IMMUTABLE, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await yahooFinance.chart(symbol, {
+      period1: dateStr,
+      period2: (() => { const d = new Date(prev); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10) })(),
+      interval: '5m',
+      includePrePost: true,
     }, { validateResult: false })
     const quotes: any[] = result?.quotes ?? []
     return quotes
@@ -211,6 +296,8 @@ function toContract(c: Record<string, unknown>, type: 'call' | 'put'): OptionCon
     ask: Number(c.ask ?? 0),
     impliedVolatility: Number(c.impliedVolatility ?? 0),
     openInterest: Number(c.openInterest ?? 0),
+    volume: Number(c.volume ?? 0),
+    inTheMoney: Boolean(c.inTheMoney),
   }
 }
 
@@ -294,6 +381,67 @@ async function fetchScreener(scrId: string): Promise<CachedResult<ScreenerItem[]
       changePercent: q.regularMarketChangePercent ?? 0,
       volume: q.regularMarketVolume ?? 0,
     })) as ScreenerItem[]
+  }, { allowStale: true })
+}
+
+// ── Indices ───────────────────────────────────────────────────────────────────
+
+const INDEX_SYMBOLS = ['^GSPC', '^IXIC', '^DJI', '^VIX']
+const INDEX_NAMES: Record<string, string> = {
+  '^GSPC': 'S&P 500',
+  '^IXIC': '纳斯达克',
+  '^DJI': '道琼斯',
+  '^VIX': 'VIX',
+}
+
+export async function getIndices(): Promise<CachedResult<IndexItem[]>> {
+  return withCache('market:indices', TTL.SCREENER, async () => {
+    await yahooLimiter.acquire()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any[] = await yahooFinance.quote(INDEX_SYMBOLS, {}, { validateResult: false }) as any[]
+    const quotes = Array.isArray(res) ? res : [res]
+    return quotes.map((q) => ({
+      symbol: q.symbol ?? '',
+      name: INDEX_NAMES[q.symbol] ?? q.shortName ?? q.symbol,
+      price: q.regularMarketPrice ?? 0,
+      change: q.regularMarketChange ?? 0,
+      changePercent: q.regularMarketChangePercent ?? 0,
+    })) as IndexItem[]
+  }, { allowStale: true })
+}
+
+// ── Sector ETFs ───────────────────────────────────────────────────────────────
+
+const SECTOR_ETFS = [
+  { symbol: 'SOXX', name: '半导体' },
+  { symbol: 'QQQ',  name: 'AI科技' },
+  { symbol: 'CLOU', name: 'AI基建' },
+  { symbol: 'ITA',  name: '军工' },
+  { symbol: 'NLR',  name: '核电' },
+  { symbol: 'XLE',  name: '石油能源' },
+  { symbol: 'XBI',  name: '生物医药' },
+  { symbol: 'KWEB', name: '中概' },
+  { symbol: 'XLF',  name: '金融' },
+  { symbol: 'XRT',  name: '零售消费' },
+  { symbol: 'XLRE', name: '房地产' },
+]
+
+export async function getSectors(): Promise<CachedResult<SectorItem[]>> {
+  return withCache('market:sectors', TTL.SCREENER, async () => {
+    await yahooLimiter.acquire()
+    const syms = SECTOR_ETFS.map(e => e.symbol)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any[] = await yahooFinance.quote(syms, {}, { validateResult: false }) as any[]
+    const quotes = Array.isArray(res) ? res : [res]
+    const nameMap = Object.fromEntries(SECTOR_ETFS.map(e => [e.symbol, e.name]))
+    return quotes
+      .map((q) => ({
+        symbol: q.symbol ?? '',
+        name: nameMap[q.symbol] ?? q.symbol,
+        price: q.regularMarketPrice ?? 0,
+        changePercent: q.regularMarketChangePercent ?? 0,
+      }))
+      .sort((a, b) => b.changePercent - a.changePercent) as SectorItem[]
   }, { allowStale: true })
 }
 

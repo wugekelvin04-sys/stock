@@ -49,17 +49,35 @@ async function imageToBase64(filePath: string): Promise<string> {
   return buf.toString('base64')
 }
 
+function makeEnv() {
+  return {
+    HOME: os.homedir(),
+    USER: os.userInfo().username,
+    LOGNAME: os.userInfo().username,
+    TMPDIR: os.tmpdir(),
+    PATH: [`${os.homedir()}/.local/bin`, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', process.env.PATH ?? ''].join(':'),
+    ...(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_BIN', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+      .reduce((acc, k) => { if (process.env[k]) acc[k] = process.env[k]!; return acc }, {} as Record<string, string>)),
+  }
+}
+
 function runClaude(claudeBin: string, prompt: string, imagePaths: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = ['-p', prompt, '--output-format', 'json']
+    const args = [
+      '--output-format', 'json',
+      '--dangerously-skip-permissions',
+      '--mcp-config', '{"mcpServers":{}}',
+      '--strict-mcp-config',
+    ]
     for (const img of imagePaths) {
       args.push('--image', img)
     }
-    const proc = spawn(claudeBin, args, { env: process.env })
+    const proc = spawn(claudeBin, args, { env: makeEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
+    proc.on('spawn', () => { proc.stdin!.write(prompt); proc.stdin!.end() })
     let stdout = ''
     let stderr = ''
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+    proc.stdout!.on('data', (d: Buffer) => { stdout += d.toString() })
+    proc.stderr!.on('data', (d: Buffer) => { stderr += d.toString() })
     proc.on('close', (code) => {
       if (code !== 0) reject(new Error(`claude exited ${code}: ${stderr.slice(0, 300)}`))
       else resolve(stdout)

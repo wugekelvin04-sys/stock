@@ -9,6 +9,7 @@ interface Props {
   fetchedAt?: number
   onRefresh?: () => void
   refreshing?: boolean
+  headerRight?: React.ReactNode
 }
 
 function timeAgo(ms: number) {
@@ -18,7 +19,7 @@ function timeAgo(ms: number) {
   return `${Math.floor(diff / 60)} 小时前`
 }
 
-export function SectionCard({ title, subtitle, children, loading, fromCache, fetchedAt, onRefresh, refreshing }: Props) {
+export function SectionCard({ title, subtitle, children, loading, fromCache, fetchedAt, onRefresh, refreshing, headerRight }: Props) {
   return (
     <div className="card flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -36,6 +37,7 @@ export function SectionCard({ title, subtitle, children, loading, fromCache, fet
             </button>
           )}
           {loading && <div className="h-3 w-3 animate-spin rounded-full border-2 border-fg-subtle border-t-transparent" />}
+          {headerRight}
         </div>
       </div>
       {children}

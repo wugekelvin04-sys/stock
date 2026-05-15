@@ -43,16 +43,21 @@ function fmt(n: number) {
 /** Normalize to YYYY-MM-DD for lwc daily series */
 function toDateStr(raw: string): string { return raw.slice(0, 10) }
 
-/** Convert ISO string to lwc UTCTimestamp (seconds) */
+/** Convert ISO string to lwc UTCTimestamp (seconds).
+ *  Shift by local timezone offset so lwc's UTC display matches local wall-clock time. */
 function toUTC(raw: string): UTCTimestamp {
-  return Math.floor(new Date(raw).getTime() / 1000) as UTCTimestamp
+  const ms = new Date(raw).getTime()
+  const offsetMs = new Date().getTimezoneOffset() * -60 * 1000
+  return Math.floor((ms + offsetMs) / 1000) as UTCTimestamp
 }
 
+/** Format the shifted UTCTimestamp back to local HH:MM.
+ *  ts is already offset-adjusted, so treat as UTC to get local wall-clock. */
 function fmtIntraday(ts: number): string {
-  // Use local timezone to match the time axis labels rendered by lwc
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  })
+  const d = new Date(ts * 1000)
+  const hh = String(d.getUTCHours()).padStart(2, '0')
+  const mm = String(d.getUTCMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
 }
 
 /**
@@ -79,7 +84,7 @@ const COLORS = {
   after: '#a855f7',  // 盘后 — 紫
 }
 
-const TOOLTIP_W = 280
+const TOOLTIP_W = 320
 
 export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -92,7 +97,7 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
     const chart = createChart(containerRef.current, {
       layout: { background: { type: ColorType.Solid, color: COLORS.bg }, textColor: COLORS.text, fontSize: 11 },
       grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
-      crosshair: { mode: CrosshairMode.Normal },
+      crosshair: { mode: CrosshairMode.Normal, horzLine: { labelVisible: false }, vertLine: { labelVisible: false } },
       handleScale: {
         mouseWheel: false,
         pinch: false,
@@ -124,6 +129,29 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
       const sessionColors: Record<Session, string> = {
         pre: COLORS.pre, regular: COLORS.regular, after: COLORS.after,
       }
+      // Add bridge points at session boundaries so lines connect visually
+      if (segments.pre.length > 0 && segments.regular.length > 0) {
+        segments.pre.push(segments.regular[0])
+      }
+      if (segments.regular.length > 0 && segments.after.length > 0) {
+        segments.regular.push(segments.after[0])
+      }
+
+      // Invisible anchor series: one point every 5 min from 00:00 to 23:55 local time.
+      // This gives lwc a uniform time grid for the full day so the axis spacing is even.
+      const anchor = chart.addSeries(LineSeries, {
+        color: 'rgba(0,0,0,0)', lineWidth: 1,
+        crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+      })
+      const midPrice = bars.length > 0 ? bars[Math.floor(bars.length / 2)].close : 0
+      const anchorData: { time: UTCTimestamp; value: number }[] = []
+      const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0)
+      for (let m = 0; m < 24 * 60; m += 5) {
+        const t = new Date(dayStart.getTime() + m * 60 * 1000)
+        anchorData.push({ time: toUTC(t.toISOString()), value: midPrice })
+      }
+      anchor.setData(anchorData)
+
       // Create one series per session that has data; track them all for crosshair
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const seriesList: any[] = []
@@ -162,23 +190,27 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         borderUpColor: COLORS.up, borderDownColor: COLORS.down,
         wickUpColor: COLORS.up, wickDownColor: COLORS.down,
       })
-      candleSeries.setData(bars.map((b) => ({
+      // Dedupe by date string (Yahoo sometimes returns duplicate dates for the same day)
+      const seenDates = new Map<string, typeof bars[0]>()
+      for (const b of bars) seenDates.set(toDateStr(b.date), b)
+      const dedupedBars = [...seenDates.values()].sort((a, b) => a.date < b.date ? -1 : 1)
+      candleSeries.setData(dedupedBars.map((b) => ({
         time: toDateStr(b.date), open: b.open, high: b.high, low: b.low, close: b.close,
       })))
 
-      if (bars.length >= 20) {
+      if (dedupedBars.length >= 20) {
         const ma20 = chart.addSeries(LineSeries, {
           color: COLORS.ma20, lineWidth: 1, title: 'MA20',
           crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
         })
-        ma20.setData(sma(bars, 20))
+        ma20.setData(sma(dedupedBars, 20))
       }
-      if (bars.length >= 50) {
+      if (dedupedBars.length >= 50) {
         const ma50 = chart.addSeries(LineSeries, {
           color: COLORS.ma50, lineWidth: 1, title: 'MA50',
           crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
         })
-        ma50.setData(sma(bars, 50))
+        ma50.setData(sma(dedupedBars, 50))
       }
       if (costBasis) {
         candleSeries.createPriceLine({
@@ -200,7 +232,7 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
         setTooltip({
           visible: true, x,
           price: bar.close, open: bar.open, high: bar.high, low: bar.low,
-          time: String(param.time),
+          time: String(param.time).slice(5), // MM-DD from YYYY-MM-DD
         })
       })
     }
@@ -230,13 +262,13 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
       {/* Tooltip — centered on the crosshair bar, pinned near top */}
       {tooltip.visible && (
         <div
-          className="pointer-events-none absolute top-2 flex items-center gap-2.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs shadow-lg"
+          className="pointer-events-none absolute top-2 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs shadow-lg"
           style={{ left: tooltip.x, width: TOOLTIP_W, zIndex: 10 }}
         >
           <span className="text-fg-subtle shrink-0">{tooltip.time}</span>
           <span className="font-mono font-semibold text-fg shrink-0">${fmt(tooltip.price)}</span>
           {mode === 'candle' && tooltip.open != null && tooltip.open > 0 && (
-            <span className="font-mono text-fg-subtle text-[11px] truncate">
+            <span className="font-mono text-fg-subtle text-[11px] shrink-0">
               O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
             </span>
           )}

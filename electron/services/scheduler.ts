@@ -2,9 +2,10 @@ import cron from 'node-cron'
 import Holidays from 'date-holidays'
 import { BrowserWindow, Notification, Tray } from 'electron'
 import { spawn } from 'node:child_process'
+import os from 'node:os'
 import { getClaudeBinPath } from './claudeHelper'
-import { saveDailyPicks, saveInsight, listHoldings } from './db'
-import type { DailyPick } from './db'
+import { saveDailyPicks, saveInsight, listHoldings, saveSectorPicks, getLatestSectorPicks } from './db'
+import type { DailyPick, SectorPick } from './db'
 
 // Tray reference for status updates
 let _tray: Tray | null = null
@@ -51,63 +52,157 @@ function todayET(): string {
 
 // ── claude runner ─────────────────────────────────────────────────────────────
 
-function runClaude(claudeBin: string, prompt: string): Promise<string> {
+function makeSpawnEnv() {
+  return {
+    HOME: os.homedir(),
+    USER: os.userInfo().username,
+    LOGNAME: os.userInfo().username,
+    TMPDIR: os.tmpdir(),
+    PATH: [`${os.homedir()}/.local/bin`, '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', process.env.PATH ?? ''].join(':'),
+    ...(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_BIN', 'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+      .reduce((acc, k) => { if (process.env[k]) acc[k] = process.env[k]!; return acc }, {} as Record<string, string>)),
+  }
+}
+
+// Stream-JSON runner — calls onToken for each assistant text chunk, resolves with full text
+function runClaudeStream(
+  claudeBin: string,
+  prompt: string,
+  onToken?: (text: string) => void,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(claudeBin, [
-      '-p', prompt,
-      '--output-format', 'json',
-      '--allowedTools', 'WebFetch,WebSearch',
-    ], { env: process.env })
-    let out = ''
-    let err = ''
-    proc.stdout.on('data', (d: Buffer) => { out += d.toString() })
-    proc.stderr.on('data', (d: Buffer) => { err += d.toString() })
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--dangerously-skip-permissions',
+      '--mcp-config', '{"mcpServers":{}}',
+      '--strict-mcp-config',
+    ], { env: makeSpawnEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
+
+    proc.on('spawn', () => { proc.stdin!.write(prompt); proc.stdin!.end() })
+
+    let buffer = ''
+    let fullText = ''
+    proc.stdout!.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const msg = JSON.parse(line) as Record<string, unknown>
+          if (msg.type === 'assistant') {
+            const content = (msg.message as Record<string, unknown>)?.content
+            if (Array.isArray(content)) {
+              for (const block of content as Record<string, unknown>[]) {
+                if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+                  fullText += block.text as string
+                  onToken?.(block.text as string)
+                } else if (block.type === 'tool_use') {
+                  const toolName = block.name as string
+                  const input = block.input as Record<string, unknown>
+                  if (toolName === 'WebSearch' || toolName === 'mcp__tavily__search') {
+                    onToken?.(`\n🔍 搜索: ${input.query ?? ''}\n`)
+                  } else if (toolName === 'WebFetch') {
+                    onToken?.(`\n📄 读取页面...\n`)
+                  } else {
+                    onToken?.(`\n⚙️ ${toolName}...\n`)
+                  }
+                }
+              }
+            }
+          } else if (msg.type === 'result') {
+            const result = (msg as Record<string, unknown>).result as string | undefined
+            if (result && !fullText) fullText = result
+          }
+        } catch { /* non-JSON */ }
+      }
+    })
+
+    proc.stderr!.on('data', (d: Buffer) => console.error('[scheduler claude stderr]', d.toString().slice(0, 200)))
     proc.on('close', (code) => {
-      if (code !== 0) reject(new Error(`claude exit ${code}: ${err.slice(0, 200)}`))
-      else resolve(out)
+      if (code !== 0) reject(new Error(`claude exit ${code}`))
+      else resolve(fullText)
     })
     proc.on('error', reject)
   })
 }
 
-function extractText(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw) as { result?: string; content?: Array<{ text?: string }> }
-    if (parsed.result) return parsed.result
-    if (parsed.content) return parsed.content.map((c) => c.text ?? '').join('')
-  } catch { /* raw text fallback */ }
-  return raw.trim()
-}
+// ── Daily picks ───────────────────────────────────────────────────────────────
 
-// ── Daily picks (09:00 ET) ────────────────────────────────────────────────────
+const PICKS_PROMPT = (date: string) =>
+  `今天是 ${date}。请用 WebSearch 搜索今日美股市场最新动态，然后选出今日最值得关注的 10 支股票。
+结合昨日收盘后新闻、技术面趋势、板块轮动，给出具体 ticker 和一句话中文理由（20字以内，说明核心机会）。
+严格输出 JSON 数组格式，不要任何其他文字：
+[{"symbol":"AAPL","reason":"苹果发布超预期财报，AI 服务收入大增"},...]`
 
-async function runDailyScreen(claudeBin: string) {
+// onProgress receives each streamed text chunk for live display
+export async function triggerDailyPicks(onProgress?: (text: string) => void): Promise<void> {
   const date = todayET()
   console.log(`[scheduler] Running daily screen for ${date}`)
 
-  const prompt = `今天是 ${date}。请分析美股市场,选出今日最值得关注的 10 支股票。
-结合昨日收盘后新闻、技术面趋势、板块轮动,给出具体 ticker 和一句话理由。
-严格输出 JSON 数组格式,不要其他文字:
-[{"symbol":"AAPL","reason":"苹果发布超预期财报,AI 服务收入大增"},...]`
+  let claudeBin: string
+  try { claudeBin = await getClaudeBinPath() }
+  catch { throw new Error('未找到 claude CLI') }
 
-  try {
-    const raw = await runClaude(claudeBin, prompt)
-    const text = extractText(raw)
-    const match = text.match(/\[[\s\S]*\]/)
-    if (!match) throw new Error('No JSON array in response')
-    const picks = JSON.parse(match[0]) as DailyPick[]
-    saveDailyPicks(date, picks)
-    console.log(`[scheduler] Saved ${picks.length} daily picks`)
+  const fullText = await runClaudeStream(claudeBin, PICKS_PROMPT(date), onProgress)
+  const start = fullText.indexOf('[')
+  const end = fullText.lastIndexOf(']')
+  if (start === -1 || end === -1 || end <= start) throw new Error('响应中未找到 JSON 数组，原始输出: ' + fullText.slice(0, 200))
+  const picks = JSON.parse(fullText.slice(start, end + 1)) as DailyPick[]
+  if (!picks.length) throw new Error('解析到的机会榜为空')
+  saveDailyPicks(date, picks)
+  console.log(`[scheduler] Saved ${picks.length} daily picks`)
+  notify('今日机会榜已更新', `Claude 为你精选了 ${picks.length} 支值得关注的股票`)
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send('scheduler:daily-picks-updated', { date, picks })
+  )
+}
 
-    notify('今日机会榜已更新', `Claude 为你精选了 ${picks.length} 支值得关注的股票`)
+// ── Sector picks ─────────────────────────────────────────────────────────────
 
-    // broadcast to renderer
-    BrowserWindow.getAllWindows().forEach((w) =>
-      w.webContents.send('scheduler:daily-picks-updated', { date, picks })
-    )
-  } catch (e) {
-    console.error('[scheduler] daily screen failed:', (e as Error).message)
-  }
+const SECTOR_PICKS_PROMPT = (date: string) =>
+  `今天是 ${date}（美东时间）。请用 WebSearch 搜索今日美股主要板块的最新动态，然后输出今日最值得关注的 6 个板块及每个板块推荐的 3 只个股。
+
+要求：
+- 板块名称用中文（如：半导体、AI基建、军工、核电、生物医药、中概、金融等）
+- etf 字段填该板块最具代表性的 ETF ticker（如 SOXX、QQQ、ITA、NLR、XBI、KWEB、XLF 等）
+- changeHint 用一句中文（15字内）说明今日该板块的核心驱动
+- 每个板块推荐 3 只个股，reason 说明今日选择该股的具体理由（20字内）
+- 按今日表现/关注度从高到低排序
+
+严格输出 JSON 数组，不要任何其他文字：
+[
+  {
+    "name": "半导体",
+    "etf": "SOXX",
+    "changeHint": "出口限制松绑带动整体反弹",
+    "stocks": [
+      {"symbol": "NVDA", "reason": "AI芯片需求超预期，盘前大涨"},
+      {"symbol": "AMD", "reason": "服务器CPU市占率持续提升"},
+      {"symbol": "AVGO", "reason": "自研AI芯片订单超预期"}
+    ]
+  },
+  ...
+]`
+
+export async function triggerSectorPicks(onProgress?: (text: string) => void): Promise<void> {
+  const date = todayET()
+  let claudeBin: string
+  try { claudeBin = await getClaudeBinPath() }
+  catch { throw new Error('未找到 claude CLI') }
+
+  const fullText = await runClaudeStream(claudeBin, SECTOR_PICKS_PROMPT(date), onProgress)
+  // Find the outermost JSON array robustly
+  const start = fullText.indexOf('[')
+  const end = fullText.lastIndexOf(']')
+  if (start === -1 || end === -1 || end <= start) throw new Error('板块分析响应中未找到 JSON 数组: ' + fullText.slice(0, 200))
+  const picks = JSON.parse(fullText.slice(start, end + 1)) as SectorPick[]
+  if (!picks.length) throw new Error('板块分析结果为空')
+  saveSectorPicks(date, picks)
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send('scheduler:sector-picks-updated', { date, picks })
+  )
 }
 
 // ── Hourly insight (整点 09:30-16:00 ET) ─────────────────────────────────────
@@ -130,13 +225,10 @@ async function runHourlyInsight(claudeBin: string) {
 
   console.log(`[scheduler] Running hourly insight at ET ${hour}:00`)
   try {
-    const raw = await runClaude(claudeBin, prompt)
-    const text = extractText(raw)
+    const text = await runClaudeStream(claudeBin, prompt)
     saveInsight(text, snapshot)
     console.log('[scheduler] Insight saved')
-
     notify(`${hour}:00 持仓 Insight`, text.slice(0, 80) + '…')
-
     BrowserWindow.getAllWindows().forEach((w) =>
       w.webContents.send('scheduler:insight-updated', { content: text, triggeredAt: Date.now() })
     )
@@ -186,29 +278,17 @@ export async function startScheduler() {
   updateTrayStatus()
   cron.schedule('*/5 * * * *', updateTrayStatus)
 
-  // Daily picks: every day at 09:00 ET → run as cron in local time with ET check
-  // Cron runs every minute at :00 of 9th hour — but we check ET inside
   cron.schedule('0 * * * *', async () => {
     if (!isNYSETradingDay()) return
     const { hour, minute } = nowInET()
-    // 09:00 ET → daily screen
-    if (hour === 9 && minute === 0) {
-      await runDailyScreen(claudeBin)
-    }
-    // 09:30–16:00 ET on the hour → hourly insight
-    if (hour >= 9 && hour <= 16 && minute === 0) {
-      if (hour === 9) return // 09:00 is daily screen, not insight
-      await runHourlyInsight(claudeBin)
-    }
+    if (hour === 9 && minute === 0) await triggerDailyPicks()
+    if (hour >= 9 && hour <= 16 && minute === 0 && hour !== 9) await runHourlyInsight(claudeBin)
   })
 
-  // Also run daily screen at 09:30 if user opens app after 09:00
   cron.schedule('30 * * * *', async () => {
     if (!isNYSETradingDay()) return
     const { hour, minute } = nowInET()
-    if (hour === 9 && minute === 30) {
-      await runHourlyInsight(claudeBin) // first insight of the day
-    }
+    if (hour === 9 && minute === 30) await runHourlyInsight(claudeBin)
   })
 
   console.log('[scheduler] Started. Monitoring NYSE trading hours.')

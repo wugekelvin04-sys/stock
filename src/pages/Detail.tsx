@@ -44,6 +44,7 @@ export function Detail() {
   const [news, setNews] = useState<NewsItem[]>([])
   const [loading, setLoading] = useState(false)
   const [fromCache, setFromCache] = useState(false)
+  const [isYesterday, setIsYesterday] = useState(false)
 
   // Watchlist state
   const [watchedGroups, setWatchedGroups] = useState<WatchedGroup[]>([])
@@ -68,39 +69,85 @@ export function Detail() {
     setAllGroups(groups)
   }
 
-  const load = async (p: Period) => {
+  function isTradingHours() {
+    const now = new Date()
+    const day = now.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'America/New_York' })
+    if (day === 'Sat' || day === 'Sun') return false
+    const h = parseInt(now.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/New_York' }), 10)
+    return h >= 4 && h < 20
+  }
+
+  // Load chart bars — only called on symbol/period change, not on price refresh
+  const loadBars = async (p: Period) => {
     if (!symbol) return
     setLoading(true)
     try {
-      let histPromise: Promise<CachedResult<HistoryBar[]>>
+      let res: CachedResult<HistoryBar[]>
+      let showYesterday = false
       if (p === '1d') {
-        histPromise = window.api.market.intraday(symbol) as Promise<CachedResult<HistoryBar[]>>
+        res = await window.api.market.intraday(symbol) as CachedResult<HistoryBar[]>
+        if (!res.data?.length) {
+          res = await window.api.market.prevDayIntraday(symbol) as CachedResult<HistoryBar[]>
+          showYesterday = true
+        }
       } else if (p === '1w') {
-        histPromise = (window.api.market.history(symbol, '1mo') as Promise<CachedResult<HistoryBar[]>>).then(
-          (res) => ({ ...res, data: res.data?.slice(-5) ?? [] }),
-        )
+        const r = await window.api.market.history(symbol, '1mo') as CachedResult<HistoryBar[]>
+        res = { ...r, data: r.data?.slice(-5) ?? [] }
       } else {
-        histPromise = window.api.market.history(symbol, p) as Promise<CachedResult<HistoryBar[]>>
+        res = await window.api.market.history(symbol, p) as CachedResult<HistoryBar[]>
       }
-      const [histRes, quoteRes, newsRes] = await Promise.all([
-        histPromise,
-        window.api.market.quotes([symbol]) as Promise<CachedResult<Quote[]>>,
-        window.api.market.news(symbol) as Promise<CachedResult<NewsItem[]>>,
-      ])
-      setBars(histRes.data ?? [])
-      setQuote(quoteRes.data?.[0] ?? null)
-      setNews(newsRes.data ?? [])
-      setFromCache(histRes.fromCache)
+      setBars(res.data ?? [])
+      setFromCache(res.fromCache)
+      setIsYesterday(showYesterday)
     } catch (e) {
-      const msg = (e as Error).message ?? String(e)
-      toast.error(`${symbol} 数据加载失败: ${msg.slice(0, 60)}`, '行情错误')
+      toast.error(`${symbol} K线加载失败: ${(e as Error).message.slice(0, 60)}`, '行情错误')
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => { void load(period) }, [symbol, period])
-  useEffect(() => { void loadWatchStatus() }, [symbol])
+  // Refresh quote + news (lightweight — called on timer and on manual refresh)
+  const refreshQuote = async (silent = false) => {
+    if (!symbol) return
+    if (!silent) setLoading(true)
+    try {
+      const [quoteRes, newsRes] = await Promise.all([
+        window.api.market.quotes([symbol]) as Promise<CachedResult<Quote[]>>,
+        window.api.market.news(symbol) as Promise<CachedResult<NewsItem[]>>,
+      ])
+      setQuote(quoteRes.data?.[0] ?? null)
+      setNews(newsRes.data ?? [])
+      // For 1d, also refresh intraday bars so chart tracks live price
+      if (period === '1d' && !isYesterday) {
+        const intradayRes = await window.api.market.intraday(symbol) as CachedResult<HistoryBar[]>
+        if (intradayRes.data?.length) setBars(intradayRes.data)
+      }
+    } catch { /* silent */ } finally {
+      if (!silent) setLoading(false)
+    }
+  }
+
+  // Full reload (manual refresh button)
+  const load = async (p: Period) => {
+    await Promise.all([loadBars(p), refreshQuote()])
+  }
+
+  // Reload bars when symbol or period changes; also fetch quote+news
+  useEffect(() => { void load(period) }, [symbol, period]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadWatchStatus() }, [symbol]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Timed price refresh: 盘中 5min, 非盘中 15min
+  const periodRef = useRef(period)
+  const isYesterdayRef = useRef(isYesterday)
+  useEffect(() => { periodRef.current = period }, [period])
+  useEffect(() => { isYesterdayRef.current = isYesterday }, [isYesterday])
+
+  useEffect(() => {
+    if (!symbol) return
+    const interval = isTradingHours() ? 5 * 60 * 1000 : 15 * 60 * 1000
+    const id = setInterval(() => { void refreshQuote(true) }, interval)
+    return () => clearInterval(id)
+  }, [symbol]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close star dropdown on outside click
   useEffect(() => {
@@ -237,7 +284,7 @@ export function Detail() {
             )}
           </div>
 
-          <button onClick={() => load(period)} disabled={loading} className="btn">
+          <button onClick={() => void load(period)} disabled={loading} className="btn">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -245,7 +292,7 @@ export function Detail() {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
-        {/* Period selector */}
+        {/* Period selector + period return */}
         <div className="flex items-center gap-1">
           {PERIODS.map((p) => (
             <button
@@ -257,9 +304,21 @@ export function Detail() {
                   : 'text-fg-subtle hover:bg-bg-subtle hover:text-fg-muted'
               }`}
             >
-              {p.label}
+              {p.value === '1d' && isYesterday ? '昨天' : p.label}
             </button>
           ))}
+          {bars.length >= 2 && (() => {
+            const first = bars[0].close
+            const last = bars[bars.length - 1].close
+            const chg = last - first
+            const chgPct = (chg / first) * 100
+            const up = chg >= 0
+            return (
+              <span className={`ml-2 text-xs font-medium font-mono ${up ? 'text-accent-up' : 'text-accent-down'}`}>
+                {up ? '+' : ''}{fmt(chg)} ({up ? '+' : ''}{fmt(chgPct)}%)
+              </span>
+            )
+          })()}
         </div>
 
         {/* Chart */}
@@ -313,18 +372,120 @@ export function Detail() {
           <div className="card">
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-fg-muted">行情快照</h3>
             <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-sm">
+              {/* 基础价格信息 */}
+              {quote.open != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">开盘</span>
+                  <span className="font-mono text-fg">${fmt(quote.open)}</span>
+                </div>
+              )}
+              {quote.dayHigh != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">今日高</span>
+                  <span className="font-mono text-accent-up">${fmt(quote.dayHigh)}</span>
+                </div>
+              )}
+              {quote.dayLow != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">今日低</span>
+                  <span className="font-mono text-accent-down">${fmt(quote.dayLow)}</span>
+                </div>
+              )}
+              {quote.previousClose != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">昨收</span>
+                  <span className="font-mono text-fg">${fmt(quote.previousClose)}</span>
+                </div>
+              )}
+              {quote.bid != null && quote.ask != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">买/卖</span>
+                  <span className="font-mono text-fg">{fmt(quote.bid)} / {fmt(quote.ask)}</span>
+                </div>
+              )}
+              {/* 成交量 */}
               <div className="flex justify-between">
                 <span className="text-fg-subtle">成交量</span>
-                <span className="font-mono text-fg">{(quote.volume / 1e6).toFixed(1)}M</span>
+                <span className="font-mono text-fg">{(quote.volume / 1e6).toFixed(2)}M</span>
               </div>
-              {quote.marketCap && (
+              {quote.avgVolume3M != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">均量(3M)</span>
+                  <span className="font-mono text-fg">{(quote.avgVolume3M / 1e6).toFixed(2)}M</span>
+                </div>
+              )}
+              {/* 市值与估值 */}
+              {quote.marketCap != null && (
                 <div className="flex justify-between">
                   <span className="text-fg-subtle">市值</span>
                   <span className="font-mono text-fg">${(quote.marketCap / 1e9).toFixed(1)}B</span>
                 </div>
               )}
+              {quote.trailingPE != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">市盈率</span>
+                  <span className="font-mono text-fg">{fmt(quote.trailingPE, 1)}x</span>
+                </div>
+              )}
+              {quote.forwardPE != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">远期PE</span>
+                  <span className="font-mono text-fg">{fmt(quote.forwardPE, 1)}x</span>
+                </div>
+              )}
+              {quote.eps != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">EPS</span>
+                  <span className="font-mono text-fg">${fmt(quote.eps)}</span>
+                </div>
+              )}
+              {quote.dividendYield != null && quote.dividendYield > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">股息率</span>
+                  <span className="font-mono text-fg">{fmt(quote.dividendYield, 2)}%</span>
+                </div>
+              )}
+              {/* 52周 */}
+              {quote.fiftyTwoWeekHigh != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">52W高</span>
+                  <span className="font-mono text-accent-up">${fmt(quote.fiftyTwoWeekHigh)}</span>
+                </div>
+              )}
+              {quote.fiftyTwoWeekLow != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">52W低</span>
+                  <span className="font-mono text-accent-down">${fmt(quote.fiftyTwoWeekLow)}</span>
+                </div>
+              )}
+              {/* 分析师评级 */}
+              {quote.analystRating && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">分析师</span>
+                  <span className="font-mono text-fg text-xs">{quote.analystRating}</span>
+                </div>
+              )}
+              {/* 盘前/盘后 */}
+              {quote.preMarketPrice != null && quote.preMarketChange != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">盘前</span>
+                  <span className={`font-mono font-medium ${(quote.preMarketChange ?? 0) >= 0 ? 'text-accent-up' : 'text-accent-down'}`}>
+                    ${fmt(quote.preMarketPrice)} ({(quote.preMarketChange ?? 0) >= 0 ? '+' : ''}{fmt(quote.preMarketChange ?? 0)})
+                  </span>
+                </div>
+              )}
+              {quote.postMarketPrice != null && quote.postMarketChange != null && (
+                <div className="flex justify-between">
+                  <span className="text-fg-subtle">盘后</span>
+                  <span className={`font-mono font-medium ${(quote.postMarketChange ?? 0) >= 0 ? 'text-accent-up' : 'text-accent-down'}`}>
+                    ${fmt(quote.postMarketPrice)} ({(quote.postMarketChange ?? 0) >= 0 ? '+' : ''}{fmt(quote.postMarketChange ?? 0)})
+                  </span>
+                </div>
+              )}
+              {/* 持仓信息 */}
               {holding && (
                 <>
+                  <div className="col-span-3 my-1 border-t border-border" />
                   <div className="flex justify-between">
                     <span className="text-fg-subtle">持仓量</span>
                     <span className="font-mono text-fg">{holding.qty}</span>

@@ -76,6 +76,13 @@ function migrate(db: Database.Database) {
       created_at INTEGER NOT NULL DEFAULT (unixepoch()),
       UNIQUE(group_id, symbol)
     );
+
+    CREATE TABLE IF NOT EXISTS sector_picks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      picks_json TEXT NOT NULL,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `)
 }
 
@@ -163,6 +170,34 @@ export function getLatestDailyPicks(): { date: string; picks: DailyPick[] } | nu
     .get() as { date: string; picks_json: string } | undefined
   if (!row) return null
   return { date: row.date, picks: JSON.parse(row.picks_json) as DailyPick[] }
+}
+
+// ── Sector picks ─────────────────────────────────────────────────────────────
+
+export interface SectorPickStock {
+  symbol: string
+  reason: string  // one-line why this stock in this sector today
+}
+
+export interface SectorPick {
+  name: string        // sector display name, e.g. "半导体"
+  etf: string         // reference ETF, e.g. "SOXX"
+  changeHint: string  // short market context, e.g. "出口限制松绑带动整体上涨"
+  stocks: SectorPickStock[]
+}
+
+export function saveSectorPicks(date: string, picks: SectorPick[]) {
+  getDb()
+    .prepare(`INSERT INTO sector_picks (date, picks_json) VALUES (?, ?)`)
+    .run(date, JSON.stringify(picks))
+}
+
+export function getLatestSectorPicks(): { date: string; picks: SectorPick[] } | null {
+  const row = getDb()
+    .prepare(`SELECT date, picks_json FROM sector_picks ORDER BY id DESC LIMIT 1`)
+    .get() as { date: string; picks_json: string } | undefined
+  if (!row) return null
+  return { date: row.date, picks: JSON.parse(row.picks_json) as SectorPick[] }
 }
 
 // ── Insights ──────────────────────────────────────────────────────────────────

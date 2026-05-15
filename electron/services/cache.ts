@@ -8,7 +8,7 @@ export const TTL = {
   HISTORY: 4 * 3600,    // 4 h    — 含当日未收盘 bar 的日线（1mo）
   FUNDAMENTALS: 86400,  // 24 h   — 基本面 / 历史日线
   SEARCH: 3600,         // 1 h    — 搜索结果
-  IMMUTABLE: 30 * 86400,// 30 天  — 已收盘历史 bar / 已到期期权链（数据永不变）
+  IMMUTABLE: 10 * 365 * 86400, // ~10年 — 已收盘历史 bar / 已到期期权链（数据永不变）
 } as const
 
 export async function withCache<T>(

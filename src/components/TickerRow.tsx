@@ -11,6 +11,7 @@ interface Props {
   volume?: number
   reason?: string
   sparkPrices?: number[]
+  compact?: boolean
 }
 
 function fmt(n: number, digits = 2) {
@@ -24,9 +25,28 @@ function fmtVol(n: number) {
   return String(n)
 }
 
-export function TickerRow({ rank, symbol, name, price, changePercent, volume, reason, sparkPrices }: Props) {
+export function TickerRow({ rank, symbol, name, price, changePercent, volume, reason, sparkPrices, compact }: Props) {
   const navigate = useNavigate()
   const up = changePercent >= 0
+
+  if (compact) {
+    return (
+      <div
+        onClick={() => navigate(`/detail/${symbol}`)}
+        className="group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 transition-colors hover:bg-bg-subtle"
+      >
+        <span className="w-4 text-center text-xs font-mono text-fg-subtle">{rank}</span>
+        <span className="flex-1 font-mono text-xs font-semibold text-fg">{symbol}</span>
+        {sparkPrices && sparkPrices.length > 1 && (
+          <MiniSparkline prices={sparkPrices} up={up} />
+        )}
+        <span className="font-mono text-xs text-fg">${fmt(price)}</span>
+        <span className={`w-14 text-right text-xs font-medium ${up ? 'text-accent-up' : 'text-accent-down'}`}>
+          {up ? '+' : ''}{fmt(changePercent)}%
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div

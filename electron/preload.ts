@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer, shell } from 'electron'
-import type { HistoryPeriod, Quote, HistoryBar, OptionContract, SearchResult, ScreenerItem, NewsItem, CachedResult } from './services/market'
+import type { HistoryPeriod, Quote, HistoryBar, OptionContract, SearchResult, ScreenerItem, NewsItem, CachedResult, SectorItem, IndexItem } from './services/market'
+import type { SectorPick } from './services/db'
 import type { HoldingRecord } from './services/parser'
 import type { HoldingRow } from './services/db'
-import type { AnalysisContext, AnalysisChunk } from './services/claude'
+import type { AnalysisContext, AnalysisChunk, AnalysisMode, ChatMessage } from './services/claude'
 
 const api = {
   // ── App ────────────────────────────────────────────────────────────────────
@@ -20,8 +21,11 @@ const api = {
     losers: () => ipcRenderer.invoke('market:losers') as Promise<CachedResult<ScreenerItem[]>>,
     news: (symbol: string) => ipcRenderer.invoke('market:news', symbol) as Promise<CachedResult<NewsItem[]>>,
     intraday: (symbol: string) => ipcRenderer.invoke('market:intraday', symbol) as Promise<CachedResult<HistoryBar[]>>,
+    prevDayIntraday: (symbol: string) => ipcRenderer.invoke('market:prev-day-intraday', symbol) as Promise<CachedResult<HistoryBar[]>>,
     optionDates: (symbol: string) => ipcRenderer.invoke('market:option-dates', symbol) as Promise<string[]>,
     optionsByDate: (symbol: string, date: string) => ipcRenderer.invoke('market:options-by-date', symbol, date) as Promise<CachedResult<import('./services/market').OptionContract[]>>,
+    indices: () => ipcRenderer.invoke('market:indices') as Promise<CachedResult<IndexItem[]>>,
+    sectors: () => ipcRenderer.invoke('market:sectors') as Promise<CachedResult<SectorItem[]>>,
   },
 
   // ── Portfolio ──────────────────────────────────────────────────────────────
@@ -35,8 +39,8 @@ const api = {
 
   // ── Analysis ───────────────────────────────────────────────────────────────
   analysis: {
-    start: (symbol: string, context: AnalysisContext) =>
-      ipcRenderer.invoke('analysis:start', symbol, context) as Promise<{ sessionId: string }>,
+    start: (symbol: string, context: AnalysisContext, mode?: AnalysisMode) =>
+      ipcRenderer.invoke('analysis:start', symbol, context, mode) as Promise<{ sessionId: string }>,
     cancel: (sessionId: string) =>
       ipcRenderer.invoke('analysis:cancel', sessionId) as Promise<{ ok: boolean }>,
     onChunk: (cb: (chunk: AnalysisChunk) => void) => {
@@ -50,6 +54,24 @@ const api = {
   insight: {
     list: (limit?: number) => ipcRenderer.invoke('insight:list', limit) as Promise<{ id: number; triggered_at: number; content: string }[]>,
     dailyPicks: () => ipcRenderer.invoke('insight:daily-picks') as Promise<{ date: string; picks: { symbol: string; reason: string }[] } | null>,
+    runPicks: () => ipcRenderer.invoke('insight:run-picks') as Promise<{ ok: boolean; error?: string }>,
+    sectorPicks: () => ipcRenderer.invoke('insight:sector-picks') as Promise<{ date: string; picks: SectorPick[] } | null>,
+    runSectorPicks: () => ipcRenderer.invoke('insight:run-sector-picks') as Promise<{ started: boolean }>,
+    onSectorPicksUpdated: (cb: (payload: { date: string; picks: SectorPick[] }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, payload: { date: string; picks: SectorPick[] }) => cb(payload)
+      ipcRenderer.on('scheduler:sector-picks-updated', h)
+      return () => ipcRenderer.off('scheduler:sector-picks-updated', h)
+    },
+    onSectorPicksProgress: (cb: (text: string) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, text: string) => cb(text)
+      ipcRenderer.on('insight:sector-picks-progress', h)
+      return () => ipcRenderer.off('insight:sector-picks-progress', h)
+    },
+    onSectorPicksDone: (cb: (result: { ok: boolean; error?: string }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, result: { ok: boolean; error?: string }) => cb(result)
+      ipcRenderer.on('insight:sector-picks-done', h)
+      return () => ipcRenderer.off('insight:sector-picks-done', h)
+    },
     onInsightUpdated: (cb: (payload: { content: string; triggeredAt: number }) => void) => {
       const h = (_e: Electron.IpcRendererEvent, payload: { content: string; triggeredAt: number }) => cb(payload)
       ipcRenderer.on('scheduler:insight-updated', h)
@@ -59,6 +81,16 @@ const api = {
       const h = (_e: Electron.IpcRendererEvent, payload: { date: string; picks: { symbol: string; reason: string }[] }) => cb(payload)
       ipcRenderer.on('scheduler:daily-picks-updated', h)
       return () => ipcRenderer.off('scheduler:daily-picks-updated', h)
+    },
+    onPicksProgress: (cb: (text: string) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, text: string) => cb(text)
+      ipcRenderer.on('insight:picks-progress', h)
+      return () => ipcRenderer.off('insight:picks-progress', h)
+    },
+    onPicksDone: (cb: (result: { ok: boolean; error?: string }) => void) => {
+      const h = (_e: Electron.IpcRendererEvent, result: { ok: boolean; error?: string }) => cb(result)
+      ipcRenderer.on('insight:picks-done', h)
+      return () => ipcRenderer.off('insight:picks-done', h)
     },
   },
 
@@ -71,6 +103,19 @@ const api = {
     addItem: (groupId: number, symbol: string) => ipcRenderer.invoke('watchlist:add-item', groupId, symbol) as Promise<{ ok: boolean }>,
     removeItem: (groupId: number, symbol: string) => ipcRenderer.invoke('watchlist:remove-item', groupId, symbol) as Promise<{ ok: boolean }>,
     isWatched: (symbol: string) => ipcRenderer.invoke('watchlist:is-watched', symbol) as Promise<{ groupId: number; groupName: string }[]>,
+  },
+
+  // ── Chat ───────────────────────────────────────────────────────────────────
+  chat: {
+    send: (userMessage: string, history: ChatMessage[]) =>
+      ipcRenderer.invoke('chat:send', userMessage, history) as Promise<{ sessionId: string }>,
+    cancel: (sessionId: string) =>
+      ipcRenderer.invoke('chat:cancel', sessionId) as Promise<{ ok: boolean }>,
+    onChunk: (cb: (chunk: AnalysisChunk) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, chunk: AnalysisChunk) => cb(chunk)
+      ipcRenderer.on('chat:chunk', handler)
+      return () => ipcRenderer.off('chat:chunk', handler)
+    },
   },
 
   // ── Shell ──────────────────────────────────────────────────────────────────
