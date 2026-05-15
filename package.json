@@ -20,6 +20,7 @@
     "axios": "^1.16.1",
     "better-sqlite3": "^12.10.0",
     "canvas": "^3.2.3",
+    "lightweight-charts": "^5.2.0",
     "lucide-react": "^1.16.0",
     "pdfjs-dist": "^5.7.284",
     "react": "^18.3.1",
