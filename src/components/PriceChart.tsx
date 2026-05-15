@@ -49,9 +49,10 @@ function toUTC(raw: string): UTCTimestamp {
 }
 
 function fmtIntraday(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString('en-US', {
-    hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York', hour12: false,
-  }) + ' ET'
+  // Use local timezone to match the time axis labels rendered by lwc
+  return new Date(ts * 1000).toLocaleTimeString([], {
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  })
 }
 
 /**
@@ -92,8 +93,20 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
       layout: { background: { type: ColorType.Solid, color: COLORS.bg }, textColor: COLORS.text, fontSize: 11 },
       grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
       crosshair: { mode: CrosshairMode.Normal },
+      handleScale: {
+        mouseWheel: false,
+        pinch: false,
+        axisPressedMouseMove: false,
+      },
       rightPriceScale: { borderColor: COLORS.grid },
-      timeScale: { borderColor: COLORS.grid, timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderColor: COLORS.grid,
+        timeVisible: true,
+        secondsVisible: false,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+      },
       width: containerRef.current.clientWidth,
       height,
     })
