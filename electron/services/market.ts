@@ -118,14 +118,17 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
     }, { validateResult: false })
     const quotes: any[] = result?.quotes ?? []
     const is1dInterval = period === '1d'
-    return quotes
+    const mapped = quotes
       .filter((r) => r.close != null)
       .map((r) => {
         const raw = r.date instanceof Date ? r.date.toISOString() : String(r.date ?? '')
-        // Daily bars need YYYY-MM-DD; intraday bars keep full ISO for UTCTimestamp conversion
         const date = is1dInterval ? raw : raw.slice(0, 10)
         return { date, open: r.open ?? 0, high: r.high ?? 0, low: r.low ?? 0, close: r.close ?? 0, volume: r.volume ?? 0 }
       })
+    // Yahoo occasionally returns duplicate timestamps — dedupe keeping last occurrence
+    const seen = new Map<string, typeof mapped[0]>()
+    for (const bar of mapped) seen.set(bar.date, bar)
+    return [...seen.values()].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
   }, { allowStale: true })
 }
 
