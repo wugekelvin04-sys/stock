@@ -117,16 +117,15 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
       interval: is1d ? '5m' : '1d',
     }, { validateResult: false })
     const quotes: any[] = result?.quotes ?? []
+    const is1dInterval = period === '1d'
     return quotes
       .filter((r) => r.close != null)
-      .map((r) => ({
-        date: r.date instanceof Date ? r.date.toISOString() : String(r.date ?? ''),
-        open: r.open ?? 0,
-        high: r.high ?? 0,
-        low: r.low ?? 0,
-        close: r.close ?? 0,
-        volume: r.volume ?? 0,
-      }))
+      .map((r) => {
+        const raw = r.date instanceof Date ? r.date.toISOString() : String(r.date ?? '')
+        // Daily bars need YYYY-MM-DD; intraday bars keep full ISO for UTCTimestamp conversion
+        const date = is1dInterval ? raw : raw.slice(0, 10)
+        return { date, open: r.open ?? 0, high: r.high ?? 0, low: r.low ?? 0, close: r.close ?? 0, volume: r.volume ?? 0 }
+      })
   }, { allowStale: true })
 }
 

@@ -204,30 +204,32 @@ export function PriceChart({ bars, costBasis, height = 340, mode = 'candle' }: P
   }
 
   return (
-    <div className="relative w-full rounded-lg overflow-hidden" style={{ height }}>
-      <div ref={containerRef} className="w-full h-full" />
-
-      {/* Crosshair tooltip */}
-      {tooltip.visible && (
-        <div
-          className="pointer-events-none absolute top-2 left-3 flex items-center gap-3 rounded-md border border-border bg-bg-elevated/90 px-2.5 py-1.5 backdrop-blur-sm"
-          style={{ zIndex: 10 }}
-        >
-          <span className="text-xs text-fg-subtle">{tooltip.time}</span>
-          {mode === 'line' ? (
-            <span className="font-mono text-sm font-semibold text-fg">${fmt(tooltip.price)}</span>
-          ) : (
-            <>
-              <span className="font-mono text-sm font-semibold text-fg">${fmt(tooltip.price)}</span>
-              {tooltip.open != null && (
-                <span className="text-xs text-fg-subtle font-mono">
-                  O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
-                </span>
-              )}
-            </>
-          )}
-        </div>
-      )}
+    <div className="relative w-full rounded-lg" style={{ height }}>
+      {/* Crosshair tooltip — above chart, not clipped */}
+      <div
+        className="pointer-events-none absolute top-2 left-3 z-10 flex items-center gap-3 rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 transition-opacity duration-75"
+        style={{ opacity: tooltip.visible ? 1 : 0 }}
+      >
+        <span className="text-xs text-fg-subtle">{tooltip.time || ' '}</span>
+        {mode === 'line' ? (
+          <span className="font-mono text-sm font-semibold text-fg">
+            {tooltip.price ? `$${fmt(tooltip.price)}` : ' '}
+          </span>
+        ) : (
+          <>
+            <span className="font-mono text-sm font-semibold text-fg">
+              {tooltip.price ? `$${fmt(tooltip.price)}` : ' '}
+            </span>
+            {tooltip.open != null && tooltip.open > 0 && (
+              <span className="text-xs text-fg-subtle font-mono">
+                O {fmt(tooltip.open)} H {fmt(tooltip.high ?? 0)} L {fmt(tooltip.low ?? 0)}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+      {/* Chart fills remaining space below tooltip */}
+      <div ref={containerRef} className="absolute inset-0 rounded-lg overflow-hidden" />
     </div>
   )
 }
