@@ -102,7 +102,10 @@ export type HistoryPeriod = '1d' | '1mo' | '3mo' | '6mo' | '1y' | '2y' | '5y'
 
 export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'): Promise<CachedResult<HistoryBar[]>> {
   const key = `history:${symbol}:${period}`
-  return withCache(key, TTL.HISTORY, async () => {
+  // Historical bars for closed periods are immutable — cache much longer.
+  // Only the period that includes today's unclosed bar needs a short TTL.
+  const ttl = historyCacheTTL(period)
+  return withCache(key, ttl, async () => {
     await yahooLimiter.acquire()
     const is1d = period === '1d'
     const period1 = is1d
@@ -125,6 +128,18 @@ export async function getHistory(symbol: string, period: HistoryPeriod = '6mo'):
         volume: r.volume ?? 0,
       }))
   }, { allowStale: true })
+}
+
+/**
+ * TTL strategy for history cache keys:
+ * - 1d (intraday 5m): 5 min — market is live
+ * - 1mo: 2 h — contains today's bar (may update at close)
+ * - 3mo+: 24 h — all bars are fully settled, data is static
+ */
+function historyCacheTTL(period: HistoryPeriod): number {
+  if (period === '1d') return TTL.QUOTE          // 5 min
+  if (period === '1mo') return TTL.HISTORY       // 1 h
+  return TTL.FUNDAMENTALS                        // 24 h for 3mo/6mo/1y/2y/5y
 }
 
 function periodToDate(period: HistoryPeriod): Date {
@@ -200,19 +215,25 @@ function toContract(c: Record<string, unknown>, type: 'call' | 'put'): OptionCon
 // ── Option Dates / By Date ────────────────────────────────────────────────────
 
 export async function getOptionDates(symbol: string): Promise<string[]> {
-  try {
+  // Expiration date list changes at most daily — cache 4 hours
+  const key = `option-dates:${symbol}`
+  const result = await withCache(key, 4 * 3600, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chain: any = await yahooFinance.options(symbol as any)
     return (chain.expirationDates ?? []).map((d: unknown) =>
       d instanceof Date ? d.toISOString().slice(0, 10) : String(d)
-    )
-  } catch { return [] }
+    ) as string[]
+  }, { allowStale: true })
+  return result.data
 }
 
 export async function getOptionsByDate(symbol: string, date: string): Promise<CachedResult<OptionContract[]>> {
   const key = `options:${symbol}:${date}`
-  return withCache(key, TTL.OPTION_CHAIN, async () => {
+  // Expired option dates are fully settled — cache 7 days; future dates cache 30 min
+  const today = new Date().toISOString().slice(0, 10)
+  const ttl = date < today ? 7 * 86400 : TTL.OPTION_CHAIN
+  return withCache(key, ttl, async () => {
     await yahooLimiter.acquire()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const detail: any = await yahooFinance.options(symbol as any, { date: new Date(date) } as any)
