@@ -162,13 +162,13 @@ export async function triggerDailyPicks(onProgress?: (text: string) => void): Pr
 // ── Sector picks ─────────────────────────────────────────────────────────────
 
 const SECTOR_PICKS_PROMPT = (date: string) =>
-  `今天是 ${date}（美东时间）。请用 WebSearch 搜索今日美股主要板块的最新动态，然后输出今日最值得关注的 6 个板块及每个板块推荐的 3 只个股。
+  `今天是 ${date}（美东时间）。请用 WebSearch 搜索今日美股主要板块的最新动态，然后输出今日最值得关注的 6 个板块及每个板块推荐的 6 只个股。
 
 要求：
 - 板块名称用中文（如：半导体、AI基建、军工、核电、生物医药、中概、金融等）
 - etf 字段填该板块最具代表性的 ETF ticker（如 SOXX、QQQ、ITA、NLR、XBI、KWEB、XLF 等）
 - changeHint 用一句中文（15字内）说明今日该板块的核心驱动
-- 每个板块推荐 3 只个股，reason 说明今日选择该股的具体理由（20字内）
+- 每个板块推荐 6 只个股，reason 说明今日选择该股的具体理由（20字内）
 - 按今日表现/关注度从高到低排序
 
 严格输出 JSON 数组，不要任何其他文字：
@@ -180,7 +180,10 @@ const SECTOR_PICKS_PROMPT = (date: string) =>
     "stocks": [
       {"symbol": "NVDA", "reason": "AI芯片需求超预期，盘前大涨"},
       {"symbol": "AMD", "reason": "服务器CPU市占率持续提升"},
-      {"symbol": "AVGO", "reason": "自研AI芯片订单超预期"}
+      {"symbol": "AVGO", "reason": "自研AI芯片订单超预期"},
+      {"symbol": "MU", "reason": "HBM内存需求爆发，订单饱满"},
+      {"symbol": "AMAT", "reason": "先进制程设备出货加速"},
+      {"symbol": "QCOM", "reason": "端侧AI芯片渗透率提升"}
     ]
   },
   ...

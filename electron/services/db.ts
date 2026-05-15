@@ -119,6 +119,18 @@ export function listHoldings(): HoldingRow[] {
     .all() as HoldingRow[]
 }
 
+export function updateHolding(id: number, fields: Partial<Omit<HoldingRow, 'id'>>) {
+  const allowed = ['symbol', 'type', 'qty', 'costBasis', 'strike', 'expiry', 'side', 'exchange'] as const
+  const sets = allowed.filter(k => k in fields).map(k => {
+    const col = k === 'costBasis' ? 'cost_basis' : k
+    return `${col} = @${k}`
+  })
+  if (!sets.length) return
+  getDb()
+    .prepare(`UPDATE holdings SET ${sets.join(', ')}, updated_at = unixepoch() WHERE id = @id`)
+    .run({ id, ...fields })
+}
+
 export function deleteHolding(id: number) {
   getDb().prepare(`DELETE FROM holdings WHERE id = ?`).run(id)
 }

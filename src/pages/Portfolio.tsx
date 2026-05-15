@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload, Trash2, TrendingUp, TrendingDown, RefreshCw, Briefcase } from 'lucide-react'
+import { Upload, Trash2, TrendingUp, TrendingDown, RefreshCw, Briefcase, Pencil, X, Check } from 'lucide-react'
 import { usePortfolioStore } from '../stores/portfolio'
 import { useMarketStore } from '../stores/market'
 import { toast } from '../stores/toast'
@@ -10,16 +10,160 @@ function fmt(n: number, d = 2) {
   return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
+// ── Edit Modal ────────────────────────────────────────────────────────────────
+
+interface EditState {
+  symbol: string
+  type: 'stock' | 'option'
+  qty: string
+  costBasis: string
+  strike: string
+  expiry: string
+  side: 'call' | 'put' | ''
+}
+
+function EditModal({ row, onSave, onClose }: {
+  row: HoldingRow
+  onSave: (id: number, fields: Partial<HoldingRow>) => Promise<void>
+  onClose: () => void
+}) {
+  const [form, setForm] = useState<EditState>({
+    symbol: row.symbol,
+    type: row.type,
+    qty: String(row.qty),
+    costBasis: String(row.costBasis),
+    strike: row.strike != null ? String(row.strike) : '',
+    expiry: row.expiry ?? '',
+    side: row.side ?? '',
+  })
+  const [saving, setSaving] = useState(false)
+
+  function set(k: keyof EditState, v: string) {
+    setForm(prev => ({ ...prev, [k]: v }))
+  }
+
+  async function handleSave() {
+    const qty = parseFloat(form.qty)
+    const costBasis = parseFloat(form.costBasis)
+    if (isNaN(qty) || qty <= 0) { toast.error('请输入有效的持仓数量', '格式错误'); return }
+    if (isNaN(costBasis) || costBasis < 0) { toast.error('请输入有效的成本价', '格式错误'); return }
+    setSaving(true)
+    const fields: Partial<HoldingRow> = {
+      symbol: form.symbol.toUpperCase().trim(),
+      type: form.type,
+      qty,
+      costBasis,
+      strike: form.strike ? parseFloat(form.strike) : undefined,
+      expiry: form.expiry || undefined,
+      side: form.side || undefined,
+    }
+    await onSave(row.id, fields)
+    setSaving(false)
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-[400px] rounded-xl border border-border bg-bg-elevated shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <span className="text-sm font-semibold text-fg">编辑持仓</span>
+          <button onClick={onClose} className="rounded p-1 text-fg-subtle hover:text-fg transition-colors"><X size={14} /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-fg-subtle">股票代码</span>
+              <input value={form.symbol} onChange={e => set('symbol', e.target.value)}
+                className="input font-mono uppercase" placeholder="AAPL" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-fg-subtle">类型</span>
+              <select value={form.type} onChange={e => set('type', e.target.value as 'stock' | 'option')}
+                className="input">
+                <option value="stock">股票</option>
+                <option value="option">期权</option>
+              </select>
+            </label>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-fg-subtle">{form.type === 'option' ? '合约数' : '持仓股数'}</span>
+              <input value={form.qty} onChange={e => set('qty', e.target.value)}
+                className="input font-mono" placeholder="100" type="number" min="0" step="1" />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-fg-subtle">{form.type === 'option' ? '期权成本 (每股)' : '均价 / 成本价'}</span>
+              <input value={form.costBasis} onChange={e => set('costBasis', e.target.value)}
+                className="input font-mono" placeholder="0.00" type="number" min="0" step="0.01" />
+            </label>
+          </div>
+          {form.type === 'option' && (
+            <div className="grid grid-cols-3 gap-3">
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-fg-subtle">方向</span>
+                <select value={form.side} onChange={e => set('side', e.target.value)}
+                  className="input">
+                  <option value="">—</option>
+                  <option value="call">Call</option>
+                  <option value="put">Put</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-fg-subtle">行权价</span>
+                <input value={form.strike} onChange={e => set('strike', e.target.value)}
+                  className="input font-mono" placeholder="200" type="number" min="0" step="0.5" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] text-fg-subtle">到期日</span>
+                <input value={form.expiry} onChange={e => set('expiry', e.target.value)}
+                  className="input font-mono" placeholder="2025-01-17" type="date" />
+              </label>
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
+          <button onClick={onClose} className="btn text-xs">取消</button>
+          <button onClick={handleSave} disabled={saving} className="btn btn-primary flex items-center gap-1.5 text-xs">
+            <Check size={12} />
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Add Modal (reuses EditModal with blank row) ───────────────────────────────
+
+function AddModal({ onSave, onClose }: {
+  onSave: (fields: Omit<HoldingRow, 'id'>) => Promise<void>
+  onClose: () => void
+}) {
+  const blank: HoldingRow = { id: -1, symbol: '', type: 'stock', qty: 0, costBasis: 0 }
+  return (
+    <EditModal
+      row={blank}
+      onClose={onClose}
+      onSave={async (_id, fields) => {
+        await onSave(fields as Omit<HoldingRow, 'id'>)
+      }}
+    />
+  )
+}
+
+// ── Portfolio page ────────────────────────────────────────────────────────────
+
 export function Portfolio() {
   const { holdings, loading, reload } = usePortfolioStore()
   const { quotes, setQuotes } = useMarketStore()
   const navigate = useNavigate()
   const [importing, setImporting] = useState(false)
   const [importPreview, setImportPreview] = useState<import('../../electron/services/parser').HoldingRecord[] | null>(null)
+  const [editRow, setEditRow] = useState<HoldingRow | null>(null)
+  const [showAdd, setShowAdd] = useState(false)
 
   useEffect(() => { void reload() }, [reload])
 
-  // refresh quotes for held symbols every 5 min
   useEffect(() => {
     if (!holdings.length) return
     const symbols = [...new Set(holdings.map((h) => h.symbol))]
@@ -33,7 +177,6 @@ export function Portfolio() {
   }, [holdings, setQuotes])
 
   const handleImport = useCallback(async () => {
-    // use Electron dialog via a hidden input as fallback
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = 'image/png,image/jpeg,image/webp,.pdf'
@@ -60,6 +203,19 @@ export function Portfolio() {
     await reload()
   }, [importPreview, reload])
 
+  const handleUpdate = useCallback(async (id: number, fields: Partial<HoldingRow>) => {
+    await window.api.portfolio.update(id, fields)
+    await reload()
+    toast.success('持仓已更新', fields.symbol ?? '')
+  }, [reload])
+
+  const handleAdd = useCallback(async (fields: Omit<HoldingRow, 'id'>) => {
+    await window.api.portfolio.save([fields])
+    setShowAdd(false)
+    await reload()
+    toast.success('已添加持仓', fields.symbol)
+  }, [reload])
+
   const del = useCallback(async (id: number) => {
     await window.api.portfolio.delete(id)
     await reload()
@@ -80,18 +236,25 @@ export function Portfolio() {
     const q = quotes[h.symbol]
     return s + (q ? q.price * h.qty : h.costBasis * h.qty)
   }, 0)
-
   const totalCost = stocks.reduce((s, h) => s + h.costBasis * h.qty, 0)
   const totalPnl = totalValue - totalCost
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
+      {/* Edit / Add modals */}
+      {editRow && <EditModal row={editRow} onSave={handleUpdate} onClose={() => setEditRow(null)} />}
+      {showAdd && <AddModal onSave={handleAdd} onClose={() => setShowAdd(false)} />}
+
       {/* Header */}
       <header className="flex items-center justify-between border-b border-border px-5 py-3" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
         <span className="font-semibold text-fg">我的持仓</span>
         <div className="flex items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
           <button onClick={() => reload()} className="btn" disabled={loading}>
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          </button>
+          <button onClick={() => setShowAdd(true)} className="btn flex items-center gap-1.5 text-xs">
+            <Pencil size={13} />
+            手动添加
           </button>
           <button onClick={handleImport} disabled={importing} className="btn btn-primary flex items-center gap-1.5">
             <Upload size={13} />
@@ -153,11 +316,9 @@ export function Portfolio() {
               {stocks.map((h) => {
                 const p = pnl(h)
                 return (
-                  <div
-                    key={h.id}
+                  <div key={h.id}
                     onClick={() => navigate(`/detail/${h.symbol}`)}
-                    className="group flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-bg-subtle transition-colors"
-                  >
+                    className="group flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-bg-subtle transition-colors">
                     <div className="min-w-0 flex-1">
                       <span className="font-mono text-sm font-semibold text-fg">{h.symbol}</span>
                       <span className="ml-2 text-xs text-fg-muted">×{h.qty}</span>
@@ -172,12 +333,16 @@ export function Portfolio() {
                         {p.pct >= 0 ? '+' : ''}{fmt(p.pct)}%
                       </div>
                     ) : <div className="w-20" />}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); void del(h.id) }}
-                      className="ml-1 hidden rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent-down group-hover:flex"
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    <div className="ml-1 hidden items-center gap-1 group-hover:flex">
+                      <button onClick={(e) => { e.stopPropagation(); setEditRow(h) }}
+                        className="rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent transition-colors">
+                        <Pencil size={12} />
+                      </button>
+                      <button onClick={(e) => { e.stopPropagation(); void del(h.id) }}
+                        className="rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent-down transition-colors">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
                   </div>
                 )
               })}
@@ -191,11 +356,9 @@ export function Portfolio() {
             <h3 className="mb-3 text-sm font-semibold text-fg">期权</h3>
             <div className="space-y-1">
               {options.map((h) => (
-                <div
-                  key={h.id}
+                <div key={h.id}
                   onClick={() => navigate(`/detail/${h.symbol}`)}
-                  className="group flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-bg-subtle transition-colors"
-                >
+                  className="group flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2.5 hover:bg-bg-subtle transition-colors">
                   <div className="min-w-0 flex-1">
                     <span className="font-mono text-sm font-semibold text-fg">{h.symbol}</span>
                     <span className={`ml-2 text-xs font-medium ${h.side === 'call' ? 'text-accent-up' : 'text-accent-down'}`}>
@@ -206,12 +369,16 @@ export function Portfolio() {
                     <p>Strike ${h.strike} · {h.expiry}</p>
                     <p>成本 ${fmt(h.costBasis)} × {h.qty}</p>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void del(h.id) }}
-                    className="ml-1 hidden rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent-down group-hover:flex"
-                  >
-                    <Trash2 size={13} />
-                  </button>
+                  <div className="ml-1 hidden items-center gap-1 group-hover:flex">
+                    <button onClick={(e) => { e.stopPropagation(); setEditRow(h) }}
+                      className="rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent transition-colors">
+                      <Pencil size={12} />
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); void del(h.id) }}
+                      className="rounded p-1 text-fg-subtle hover:bg-bg hover:text-accent-down transition-colors">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -221,9 +388,7 @@ export function Portfolio() {
         {/* 空状态 */}
         {holdings.length === 0 && !loading && !importPreview && (
           <div className="empty-state animate-in">
-            <div className="empty-state-icon">
-              <Briefcase size={32} />
-            </div>
+            <div className="empty-state-icon"><Briefcase size={32} /></div>
             <div>
               <p className="text-sm font-medium text-fg-muted">还没有持仓记录</p>
               <p className="mt-1 text-xs text-fg-subtle max-w-xs">
@@ -231,10 +396,16 @@ export function Portfolio() {
               </p>
             </div>
             <div className="flex flex-col gap-2 items-center">
-              <button onClick={handleImport} className="btn btn-primary flex items-center gap-2">
-                <Upload size={14} />
-                导入截图 / PDF
-              </button>
+              <div className="flex gap-2">
+                <button onClick={() => setShowAdd(true)} className="btn flex items-center gap-2">
+                  <Pencil size={14} />
+                  手动添加
+                </button>
+                <button onClick={handleImport} className="btn btn-primary flex items-center gap-2">
+                  <Upload size={14} />
+                  导入截图 / PDF
+                </button>
+              </div>
               <p className="text-xs text-fg-subtle">支持 Robinhood、Webull、TD 等主流券商截图</p>
             </div>
           </div>

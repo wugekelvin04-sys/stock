@@ -61,26 +61,60 @@ function makeEnv() {
   }
 }
 
-function runClaude(claudeBin: string, prompt: string, imagePaths: string[]): Promise<string> {
+function runClaude(claudeBin: string, prompt: string, imageBase64List: { data: string; mediaType: string }[]): Promise<string> {
   return new Promise((resolve, reject) => {
+    // Build a stream-json message with image blocks + text block
+    const content: unknown[] = imageBase64List.map(img => ({
+      type: 'image',
+      source: { type: 'base64', media_type: img.mediaType, data: img.data },
+    }))
+    content.push({ type: 'text', text: prompt })
+
+    const inputMsg = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content },
+    })
+
     const args = [
-      '--output-format', 'json',
+      '--print',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--verbose',
       '--dangerously-skip-permissions',
       '--mcp-config', '{"mcpServers":{}}',
       '--strict-mcp-config',
     ]
-    for (const img of imagePaths) {
-      args.push('--image', img)
-    }
+
     const proc = spawn(claudeBin, args, { env: makeEnv(), stdio: ['pipe', 'pipe', 'pipe'] })
-    proc.on('spawn', () => { proc.stdin!.write(prompt); proc.stdin!.end() })
-    let stdout = ''
+    proc.on('spawn', () => { proc.stdin!.write(inputMsg + '\n'); proc.stdin!.end() })
+
+    let buffer = ''
+    let fullText = ''
     let stderr = ''
-    proc.stdout!.on('data', (d: Buffer) => { stdout += d.toString() })
+    proc.stdout!.on('data', (d: Buffer) => {
+      buffer += d.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const msg = JSON.parse(line) as Record<string, unknown>
+          if (msg.type === 'result') {
+            const r = msg.result as string | undefined
+            if (r) fullText = r
+          } else if (msg.type === 'assistant') {
+            const blocks = ((msg.message as Record<string, unknown>)?.content ?? []) as Record<string, unknown>[]
+            for (const b of blocks) {
+              if (b.type === 'text' && typeof b.text === 'string') fullText += b.text
+            }
+          }
+        } catch { /* non-JSON line */ }
+      }
+    })
     proc.stderr!.on('data', (d: Buffer) => { stderr += d.toString() })
     proc.on('close', (code) => {
-      if (code !== 0) reject(new Error(`claude exited ${code}: ${stderr.slice(0, 300)}`))
-      else resolve(stdout)
+      if (code !== 0) reject(new Error(`claude exited ${code}: ${stderr.slice(0, 400)}`))
+      else resolve(fullText)
     })
     proc.on('error', reject)
   })
@@ -113,6 +147,13 @@ function parseClaudeOutput(raw: string): HoldingRecord[] {
     }))
 }
 
+function mediaTypeFromExt(ext: string): string {
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.gif') return 'image/gif'
+  if (ext === '.webp') return 'image/webp'
+  return 'image/png'
+}
+
 export async function parseFile(filePath: string): Promise<HoldingRecord[]> {
   const info = await detectClaude()
   if (!info.ok || !info.path) {
@@ -120,28 +161,16 @@ export async function parseFile(filePath: string): Promise<HoldingRecord[]> {
   }
 
   const ext = path.extname(filePath).toLowerCase()
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'stock-parse-'))
-  const tmpImages: string[] = []
+  let images: { data: string; mediaType: string }[]
 
-  try {
-    let base64Images: string[]
-
-    if (ext === '.pdf') {
-      base64Images = await pdfToImages(filePath)
-    } else {
-      base64Images = [await imageToBase64(filePath)]
-    }
-
-    // write base64 images to tmp files so claude --image can read them
-    for (let i = 0; i < base64Images.length; i++) {
-      const tmpImg = path.join(tmpDir, `page-${i}.png`)
-      await fs.writeFile(tmpImg, Buffer.from(base64Images[i], 'base64'))
-      tmpImages.push(tmpImg)
-    }
-
-    const raw = await runClaude(info.path, EXTRACT_PROMPT, tmpImages)
-    return parseClaudeOutput(raw)
-  } finally {
-    await fs.rm(tmpDir, { recursive: true, force: true })
+  if (ext === '.pdf') {
+    const base64List = await pdfToImages(filePath)
+    images = base64List.map(data => ({ data, mediaType: 'image/png' }))
+  } else {
+    const data = await imageToBase64(filePath)
+    images = [{ data, mediaType: mediaTypeFromExt(ext) }]
   }
+
+  const raw = await runClaude(info.path, EXTRACT_PROMPT, images)
+  return parseClaudeOutput(raw)
 }

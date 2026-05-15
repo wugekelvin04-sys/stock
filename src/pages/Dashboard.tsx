@@ -365,79 +365,79 @@ function SectorPanel({ picks, stockQuotes, running, progress, onRefresh, date }:
 
 // ── Holding row ───────────────────────────────────────────────────────────────
 
+// Table header for holdings
+function HoldingTableHeader() {
+  return (
+    <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-2 px-2 pb-1 text-[10px] text-fg-subtle border-b border-border/50">
+      <span>标的</span>
+      <span className="text-right w-16">现价/均价</span>
+      <span className="text-right w-14">今日</span>
+      <span className="text-right w-20">持仓盈亏</span>
+    </div>
+  )
+}
+
 function HoldingRow({ row, quote }: { row: HoldingRow; quote?: { price: number; change: number; changePercent: number } }) {
   const navigate = useNavigate()
   const isOption = row.type === 'option'
   const multiplier = isOption ? 100 : 1
-  const qty = row.qty
-  const avgCost = row.costBasis
   const mktPrice = quote?.price
-  const totalCost = avgCost * qty * multiplier
-  const totalVal = mktPrice != null ? mktPrice * qty * multiplier : null
+  const totalCost = row.costBasis * row.qty * multiplier
+  const totalVal = mktPrice != null ? mktPrice * row.qty * multiplier : null
   const totalPnl = totalVal != null ? totalVal - totalCost : null
   const totalPnlPct = totalCost > 0 && totalPnl != null ? (totalPnl / totalCost) * 100 : null
-  const dayPnl = quote?.change != null ? quote.change * qty * multiplier : null
   const dayPct = quote?.changePercent
-
   const pnlUp = (totalPnl ?? 0) >= 0
-  const dayUp = (dayPnl ?? 0) >= 0
+  const dayUp = (dayPct ?? 0) >= 0
 
   const label = isOption
-    ? `${row.symbol} ${row.side?.toUpperCase()} $${row.strike} ${row.expiry?.slice(5)}`
+    ? `${row.symbol} ${row.side?.toUpperCase()} $${row.strike}`
     : row.symbol
 
-  function fmtMoney(v: number) {
+  function fmtVal(v: number) {
     const abs = Math.abs(v)
-    const s = abs >= 10000 ? (abs / 1000).toFixed(1) + 'K' : abs >= 1 ? abs.toFixed(2) : abs.toFixed(3)
-    return (v >= 0 ? '+' : '-') + '$' + s
+    return (v >= 0 ? '+' : '-') + '$' + (abs >= 10000 ? (abs / 1000).toFixed(1) + 'K' : abs.toFixed(0))
   }
 
   return (
     <div onClick={() => navigate(`/detail/${row.symbol}`)}
-      className="cursor-pointer rounded-lg px-2.5 py-2 hover:bg-bg-subtle transition-colors border border-transparent hover:border-border/50">
-      {/* Row 1: symbol + market price + day change */}
-      <div className="flex items-center gap-1.5">
-        <span className="font-mono text-xs font-semibold text-fg flex-1 min-w-0 truncate">{label}</span>
-        {mktPrice != null && (
-          <span className="font-mono text-xs text-fg-muted shrink-0">
-            ${mktPrice >= 100 ? mktPrice.toFixed(1) : mktPrice.toFixed(2)}
-          </span>
-        )}
-        {dayPct != null && (
-          <span className={`font-mono text-[11px] font-medium shrink-0 ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
-            {dayUp ? '+' : ''}{dayPct.toFixed(2)}%
-          </span>
-        )}
+      className="grid grid-cols-[1fr_auto_auto_auto] gap-x-2 items-center px-2 py-1.5 rounded-md cursor-pointer hover:bg-bg-subtle transition-colors">
+      {/* Col 1: symbol + qty */}
+      <div className="min-w-0">
+        <span className="font-mono text-[11px] font-semibold text-fg truncate block">{label}</span>
+        <span className="text-[10px] text-fg-subtle">
+          {row.qty}{isOption ? '张' : '股'} · 均${fmt(row.costBasis)}
+        </span>
       </div>
-      {/* Row 2: qty · avg cost · total value */}
-      <div className="flex items-center gap-2 mt-0.5">
-        <span className="text-[10px] text-fg-subtle">{qty}{isOption ? ' 张' : ' 股'}</span>
-        <span className="text-[10px] text-fg-subtle/60">·</span>
-        <span className="text-[10px] text-fg-subtle">均 ${fmt(avgCost)}</span>
-        {totalVal != null && (
-          <>
-            <span className="text-[10px] text-fg-subtle/60">·</span>
-            <span className="font-mono text-[10px] text-fg-muted">
-              ${totalVal >= 10000 ? (totalVal / 1000).toFixed(1) + 'K' : fmt(totalVal)}
-            </span>
-          </>
-        )}
+      {/* Col 2: current price */}
+      <div className="w-16 text-right">
+        {mktPrice != null
+          ? <span className="font-mono text-[11px] text-fg">${mktPrice >= 100 ? mktPrice.toFixed(1) : mktPrice.toFixed(2)}</span>
+          : <span className="text-[10px] text-fg-subtle">—</span>}
       </div>
-      {/* Row 3: day P&L + total P&L */}
-      {(dayPnl != null || totalPnl != null) && (
-        <div className="flex items-center gap-3 mt-0.5">
-          {dayPnl != null && (
-            <span className={`text-[10px] font-mono ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
-              今日 {fmtMoney(dayPnl)}
+      {/* Col 3: day change % */}
+      <div className="w-14 text-right">
+        {dayPct != null
+          ? <span className={`font-mono text-[11px] font-medium ${dayUp ? 'text-accent-up' : 'text-accent-down'}`}>
+              {dayUp ? '+' : ''}{dayPct.toFixed(2)}%
             </span>
-          )}
-          {totalPnl != null && (
-            <span className={`text-[10px] font-mono ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
-              持仓 {fmtMoney(totalPnl)}{totalPnlPct != null ? ` (${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(1)}%)` : ''}
-            </span>
-          )}
-        </div>
-      )}
+          : <span className="text-[10px] text-fg-subtle">—</span>}
+      </div>
+      {/* Col 4: total P&L */}
+      <div className="w-20 text-right">
+        {totalPnl != null
+          ? <div>
+              <span className={`font-mono text-[11px] font-medium ${pnlUp ? 'text-accent-up' : 'text-accent-down'}`}>
+                {fmtVal(totalPnl)}
+              </span>
+              {totalPnlPct != null && (
+                <span className={`block text-[9px] ${pnlUp ? 'text-accent-up/70' : 'text-accent-down/70'}`}>
+                  {totalPnlPct >= 0 ? '+' : ''}{totalPnlPct.toFixed(1)}%
+                </span>
+              )}
+            </div>
+          : <span className="text-[10px] text-fg-subtle">—</span>}
+      </div>
     </div>
   )
 }
@@ -585,20 +585,28 @@ export function Dashboard() {
   async function loadPicksHistory(symbols: string[]) {
     if (!symbols.length) return
     try {
-      const histRes = await Promise.all(symbols.map(s => window.api.market.history(s, '1mo').catch(() => null)))
+      const [quotesRes, histRes] = await Promise.all([
+        window.api.market.quotes(symbols),
+        Promise.all(symbols.map(s => window.api.market.history(s, '1mo').catch(() => null))),
+      ])
+      const etHour = parseInt(new Date().toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: 'America/New_York' }), 10)
+      const isYesterday = etHour < 4
+      const qmap: Record<string, number> = {}
+      for (const q of quotesRes.data ?? []) qmap[q.symbol] = q.price
+
       setPicksQuotes(prev => {
         const next = { ...prev }
         symbols.forEach((s, idx) => {
           const bars = histRes[idx]?.data ?? []
           const weekBar = bars.length >= 5 ? bars[bars.length - 5] : bars[0]
           const monthBar = bars[0]
-          const cur = next[s]
-          if (cur) {
-            next[s] = {
-              ...cur,
-              weekPct: weekBar ? ((cur.price - weekBar.close) / weekBar.close) * 100 : null,
-              monthPct: monthBar ? ((cur.price - monthBar.close) / monthBar.close) * 100 : null,
-            }
+          const price = qmap[s] ?? prev[s]?.price
+          if (price == null) return
+          next[s] = {
+            ...(prev[s] ?? { changePercent: 0, isYesterday }),
+            price,
+            weekPct: weekBar ? ((price - weekBar.close) / weekBar.close) * 100 : null,
+            monthPct: monthBar ? ((price - monthBar.close) / monthBar.close) * 100 : null,
           }
         })
         return next
@@ -693,19 +701,20 @@ export function Dashboard() {
   useEffect(() => {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' })
 
-    // Load today's picks from DB first so refs are populated before refreshAllQuotes
-    window.api.insight.dailyPicks().then(p => {
-      if (p) {
-        setPicks(p)
-        picksRef.current = p
-      }
-    }).catch(() => {})
+    // Load picks from DB, then market data in parallel
+    const picksInitP = window.api.insight.dailyPicks().then(p => {
+      if (p) { setPicks(p); picksRef.current = p }
+      return p
+    }).catch(() => null)
 
-    // Initial load: market screener + indices + one unified quote pass
-    void load().then(() => {
-      // Auto-run picks only if today has no analysis yet
-      if (!picksRef.current || picksRef.current.date !== today) void runPicks()
-      else void loadPicksHistory(picksRef.current.picks.map(i => i.symbol))
+    // Initial load: market screener + indices + unified quote pass
+    void Promise.all([load(), picksInitP]).then(([, p]) => {
+      if (!p || p.date !== today) {
+        void runPicks()
+      } else {
+        // Today's picks already exist — load week/month history (self-contained, fetches own quotes)
+        void loadPicksHistory(p.picks.map(i => i.symbol))
+      }
     })
     void loadHoldings()
 
@@ -852,22 +861,25 @@ export function Dashboard() {
                     详情 <ChevronRight size={10} />
                   </button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 space-y-1">
+                <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
                   {holdings.length === 0 ? (
                     <p className="py-4 text-center text-[11px] text-fg-subtle">暂无持仓，前往持仓页导入</p>
                   ) : (
                     <>
-                      {stockHoldings.map(row => (
-                        <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
-                      ))}
-                      {optionHoldings.length > 0 && (
-                        <>
-                          <p className="px-2 pt-1 pb-0.5 text-[10px] text-fg-subtle uppercase tracking-wider">期权</p>
-                          {optionHoldings.map(row => (
-                            <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
-                          ))}
-                        </>
-                      )}
+                      <HoldingTableHeader />
+                      <div className="mt-0.5 space-y-0">
+                        {stockHoldings.map(row => (
+                          <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
+                        ))}
+                        {optionHoldings.length > 0 && (
+                          <>
+                            <p className="px-2 pt-1.5 pb-0.5 text-[10px] text-fg-subtle uppercase tracking-wider">期权</p>
+                            {optionHoldings.map(row => (
+                              <HoldingRow key={row.id} row={row} quote={holdingQuotes[row.symbol]} />
+                            ))}
+                          </>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>

@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { parseFile } from '../services/parser'
-import { saveHoldings, listHoldings, deleteHolding, clearHoldings } from '../services/db'
+import { saveHoldings, listHoldings, deleteHolding, clearHoldings, updateHolding } from '../services/db'
 import type { HoldingRecord } from '../services/parser'
 
 export function registerPortfolioHandlers() {
@@ -23,6 +23,11 @@ export function registerPortfolioHandlers() {
   })
 
   ipcMain.handle('portfolio:list', () => listHoldings())
+
+  ipcMain.handle('portfolio:update', (_e, id: number, fields: Partial<HoldingRecord>) => {
+    updateHolding(id, fields)
+    return { ok: true }
+  })
 
   ipcMain.handle('portfolio:delete', (_e, id: number) => {
     deleteHolding(id)

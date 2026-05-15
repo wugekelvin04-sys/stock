@@ -33,6 +33,7 @@ const api = {
     import: (filePath: string) => ipcRenderer.invoke('portfolio:import', filePath) as Promise<HoldingRecord[]>,
     save: (records: HoldingRecord[]) => ipcRenderer.invoke('portfolio:save', records) as Promise<{ ok: boolean }>,
     list: () => ipcRenderer.invoke('portfolio:list') as Promise<HoldingRow[]>,
+    update: (id: number, fields: Partial<import('./services/parser').HoldingRecord>) => ipcRenderer.invoke('portfolio:update', id, fields) as Promise<{ ok: boolean }>,
     delete: (id: number) => ipcRenderer.invoke('portfolio:delete', id) as Promise<{ ok: boolean }>,
     clear: () => ipcRenderer.invoke('portfolio:clear') as Promise<{ ok: boolean }>,
   },
