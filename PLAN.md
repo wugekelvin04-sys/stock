@@ -21,7 +21,8 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 | 本地存储 | better-sqlite3 |
 | 行情数据 | yahoo-finance2 |
 | 新闻数据 | Finnhub 可选 + Yahoo fallback |
-| AI 分析 | Claude CLI `stream-json` |
+| AI 聊天/导入 | Claude Code CLI `stream-json` |
+| AI 股票分析 | OpenRouter Chat Completions API |
 | 多模态导入 | 截图/PDF -> base64 image -> Claude vision |
 | 定时任务 | node-cron + date-holidays |
 
@@ -38,7 +39,8 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 | 本地数据库 | `electron/services/db.ts` | SQLite migration 和 CRUD |
 | 缓存层 | `electron/services/cache.ts` | TTL cache + stale fallback |
 | 限流 | `electron/services/ratelimit.ts` | Yahoo/Finnhub token bucket |
-| Claude 服务 | `electron/services/claude.ts` | 个股分析、聊天、通用流式 helper |
+| Claude 服务 | `electron/services/claude.ts` | Claude Code 聊天、截图导入辅助、legacy 类型 |
+| API Provider | `electron/services/ai/openrouter.ts` | OpenRouter 文本生成、流式输出、搜索工具 |
 | 持仓导入 | `electron/services/parser.ts` | 图片/PDF 转 Claude vision，解析持仓 JSON |
 | 调度器 | `electron/services/scheduler.ts` | 每日机会榜、板块机会、整点 insight、AI 资料预取 |
 
@@ -72,8 +74,8 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 | 持仓 `Portfolio` | 已实现 | 股票/期权持仓列表、手动维护、截图/PDF 导入 |
 | 个股详情 `Detail` | 已实现 | 报价、K 线、新闻、期权链、AI 分析、收藏 |
 | 自选 `Watchlist` | 已实现 | 分组管理和 ticker 管理 |
-| Claude `Chat` | 已实现 | 独立流式聊天页 |
-| 设置 `Settings` | 部分实现 | 应用信息、Claude 检测等基础设置 |
+| Claude `Chat` | 已实现 | 独立流式聊天页，继续使用 Claude Code |
+| 设置 `Settings` | 已实现 | Claude 检测、OpenRouter 模型/API Key、prefetch 配置 |
 
 ---
 
@@ -91,7 +93,7 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 | history 3mo+ | 长缓存 | 已收盘历史数据视为不可变 |
 | daily picks | 每个交易日 09:00 ET | Claude 生成 |
 | hourly insight | 交易日 09:30 和 10:00-16:00 ET | 有持仓时生成 |
-| AI prefetch | 每 10 分钟 | 为持仓、自选、榜单、机会股预取 AI 资料 |
+| AI prefetch | 默认关闭 | 开启后按设置限量预取，默认不搜索 |
 
 ---
 
@@ -145,6 +147,7 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 - [x] 收藏到自选
 - [x] 流式 AI 分析
 - [x] profile / catalyst / ratings / earnings 面板
+- [x] 个股分析和资料面板迁移到 OpenRouter API
 
 ### M6 - 调度和自动洞察
 
@@ -156,6 +159,7 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 - [x] Tray 市场开盘状态
 - [x] 关注股票 AI 资料后台预取
 - [x] 后台任务面板
+- [x] prefetch 配置化，默认关闭
 
 ### M7 - 打磨与稳定性
 
@@ -173,14 +177,14 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 
 ## Claude CLI 会话策略
 
-| 用途 | 会话 / session id | 生命周期 |
+| 用途 | 后端 | 生命周期 |
 |---|---|---|
-| 个股分析 | `analysis-<SYMBOL>-<timestamp>` | 按需生成，可取消同 symbol 旧进程 |
-| 聊天 | renderer 传入 session id | 单次流式问答 |
-| 个股资料 | `stock-profile-*` 等 | 生成后写 SQLite |
-| OCR 导入 | 无持久 resume | 一次性识别 |
-| 每日机会榜 | scheduler 内部任务 | 每个交易日一次 |
-| 整点 insight | scheduler 内部任务 | 交易日盘中 |
+| 个股分析 | OpenRouter API | 按需生成，可取消同 symbol 旧请求 |
+| 聊天 | Claude Code CLI | 单次流式问答 |
+| 个股资料 | OpenRouter API | 生成后写 SQLite |
+| OCR 导入 | Claude Code vision | 一次性识别 |
+| 每日机会榜 | OpenRouter API | 每个交易日一次 |
+| 整点 insight | OpenRouter API | 交易日盘中 |
 
 ---
 
@@ -189,8 +193,10 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 | 风险 / 问题 | 影响 | 处理方向 |
 |---|---|---|
 | Yahoo Finance 非官方 API | 接口变化会影响行情 | 保持缓存和 stale fallback，必要时增加备用源 |
-| Claude CLI 路径和登录态 | AI 功能不可用 | 启动检测和设置页引导 |
-| Claude 调用使用 `--dangerously-skip-permissions` | 本机安全边界偏宽 | 后续收紧工具权限和 prompt 能力 |
+| Claude CLI 路径和登录态 | 聊天和持仓导入不可用 | 启动检测和设置页引导 |
+| Claude 调用使用 `--dangerously-skip-permissions` | 本机安全边界偏宽 | 仅保留在聊天/导入路径，后续收紧工具权限 |
+| OpenRouter API Key 缺失 | 股票分析和自动任务不可用 | 设置页配置，或使用 `OPENROUTER_API_KEY` 环境变量 |
+| API 搜索成本失控 | 频繁看股时成本上升 | 搜索次数、prefetch 默认关闭、后台默认不搜索 |
 | 期权数据质量不稳定 | 期权链和持仓估值可能偏差 | 允许手动录入，增加数据源校验 |
 | 市场节假日判断不完整 | 定时任务可能误触发 | 当前用 `date-holidays`，后续可换 NYSE 专用 calendar |
 | 文档需要随代码更新 | 认知偏差 | README / PLAN 已按当前实现同步 |
@@ -199,8 +205,8 @@ Stock Desk 是一个个人美股/期权桌面工作台。它把行情、持仓�
 
 ## 下一步建议
 
-1. 先修 typecheck 和明显缓存 key 问题，保证主干可构建。
+1. 用真实 OpenRouter Key 手动验证个股分析、四个资料面板、机会榜。
 2. 增加 ErrorBoundary 和关键 IPC 错误提示。
 3. 为 market、parser、scheduler 的核心路径补最小测试。
-4. 梳理设置页：Claude 状态、Finnhub key、缓存清理、快捷键。
+4. 设置页继续补 Finnhub key、缓存清理、快捷键。
 5. 做一次生产打包验证，确认 native deps 和 Electron 路径正常。

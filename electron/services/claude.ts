@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { BrowserWindow } from 'electron'
 import os from 'node:os'
+import { streamOpenRouterText } from './ai/openrouter'
 
 const execFileP = promisify(execFile)
 
@@ -56,14 +57,14 @@ function buildAnalysisPrompt(symbol: string, context: AnalysisContext, mode: Ana
   const suffix = contextSuffix(context)
 
   if (mode === 'why') {
-    return `用 WebSearch 搜索 ${symbol} 今日最新消息，然后用中文简明回答：
+    return `请搜索并结合 ${symbol} 今日最新消息，然后用中文简明回答：
 
 ## 今日涨跌原因
 ${symbol} 今天为什么涨/跌？从消息面、基本面、技术面各角度分析，控制在 300 字以内。${suffix}`
   }
 
   if (mode === 'call') {
-    return `用 WebSearch 搜索 ${symbol} 最新消息和期权数据，然后用中文回答：
+    return `请搜索并结合 ${symbol} 最新消息和期权数据，然后用中文回答：
 
 ## 买 Call 建议
 1. **当前趋势判断**：现在是否适合买 Call？
@@ -75,7 +76,7 @@ ${symbol} 今天为什么涨/跌？从消息面、基本面、技术面各角度
   }
 
   if (mode === 'trend') {
-    return `用 WebSearch 搜索 ${symbol} 最新消息、机构评级和技术面，然后用中文回答：
+    return `请搜索并结合 ${symbol} 最新消息、机构评级和技术面，然后用中文回答：
 
 ## 后市趋势预测
 1. **短期（1-2周）**：方向判断及理由
@@ -87,7 +88,7 @@ ${symbol} 今天为什么涨/跌？从消息面、基本面、技术面各角度
 
   // full
   const lines: string[] = [
-    `请对 ${symbol} 做深度分析，先用 WebSearch 搜索该股票最新新闻和基本面数据，然后使用中文回答，按以下结构输出:`,
+    `请对 ${symbol} 做深度分析，先搜索该股票最新新闻和基本面数据，然后使用中文回答，按以下结构输出:`,
     '',
     `## 1. 今日涨跌归因`,
     `分析 ${symbol} 今日涨跌的主要原因(基本面、消息面、技术面各角度)`,
@@ -131,6 +132,7 @@ export interface AnalysisChunk {
 // ── Streaming analysis via CLI ─────────────────────────────────────────────────
 
 const activeProcesses = new Map<string, ReturnType<typeof spawn>>()
+const activeApiControllers = new Map<string, AbortController>()
 
 export async function startAnalysis(
   symbol: string,
@@ -147,111 +149,32 @@ export async function startAnalysis(
       activeProcesses.delete(id)
     }
   }
-
-  // Pre-detect claude bin synchronously from cache if available, else use known path
-  const claudeBin = _claudeBin ?? `${os.homedir()}/.local/bin/claude`
-
-  const args = [
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--dangerously-skip-permissions',
-    '--mcp-config', '{"mcpServers":{}}',
-    '--strict-mcp-config',
-  ]
-
-  // Ensure claude gets a full shell environment — Electron may strip PATH etc.
-  const spawnEnv = {
-    HOME: os.homedir(),
-    USER: os.userInfo().username,
-    LOGNAME: os.userInfo().username,
-    TMPDIR: os.tmpdir(),
-    PATH: [
-      `${os.homedir()}/.local/bin`,
-      '/opt/homebrew/bin',
-      '/usr/local/bin',
-      '/usr/bin',
-      '/bin',
-      process.env.PATH ?? '',
-    ].join(':'),
-    // Pass through auth-related env vars
-    ...(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'CLAUDE_BIN',
-         'NODE_EXTRA_CA_CERTS', 'NODE_TLS_REJECT_UNAUTHORIZED',
-         'XDG_CONFIG_HOME', 'XDG_DATA_HOME'].reduce((acc, k) => {
-      if (process.env[k]) acc[k] = process.env[k]!
-      return acc
-    }, {} as Record<string, string>)),
+  for (const [id, controller] of activeApiControllers) {
+    if (id.startsWith(`analysis-${symbol}`)) {
+      controller.abort()
+      activeApiControllers.delete(id)
+    }
   }
 
-  const proc = spawn(claudeBin, args, {
-    env: spawnEnv,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
+  const controller = new AbortController()
+  activeApiControllers.set(sessionId, controller)
 
-  activeProcesses.set(sessionId, proc)
-
-  proc.on('spawn', () => {
-    proc.stdin!.write(prompt)
-    proc.stdin!.end()
-  })
-
-  let buffer = ''
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    buffer += chunk.toString()
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const msg = JSON.parse(line) as Record<string, unknown>
-        if (msg.type === 'assistant') {
-          const content = (msg.message as Record<string, unknown>)?.content
-          if (Array.isArray(content)) {
-            for (const block of content as Record<string, unknown>[]) {
-              if (block.type === 'text' && typeof block.text === 'string' && block.text) {
-                win.webContents.send('analysis:chunk', { type: 'token', text: block.text, sessionId } as AnalysisChunk)
-              } else if (block.type === 'tool_use') {
-                const toolName = block.name as string
-                const input = block.input as Record<string, unknown>
-                let hint = ''
-                if (toolName === 'WebSearch' || toolName === 'mcp__tavily__search') {
-                  hint = `\n> 🔍 搜索: ${input.query ?? ''}\n`
-                } else if (toolName === 'WebFetch') {
-                  hint = `\n> 📄 读取页面...\n`
-                } else if (toolName === 'Agent') {
-                  hint = `\n> 🤖 子任务: ${input.description ?? ''}\n`
-                } else {
-                  hint = `\n> ⚙️ ${toolName}...\n`
-                }
-                win.webContents.send('analysis:chunk', { type: 'token', text: hint, sessionId } as AnalysisChunk)
-              }
-            }
-          }
-        } else if (msg.type === 'result') {
-          win.webContents.send('analysis:chunk', { type: 'done', sessionId } as AnalysisChunk)
-        }
-      } catch { /* non-JSON line */ }
-    }
-  })
-
-  proc.stderr!.on('data', (chunk: Buffer) => {
-    console.error('[claude stderr]', chunk.toString().slice(0, 200))
-  })
-
-  proc.on('close', (code) => {
-    activeProcesses.delete(sessionId)
-    if (code !== 0 && code !== null) {
-      win.webContents.send('analysis:chunk', {
-        type: 'error',
-        error: `claude 进程退出 (code ${code})`,
-        sessionId,
-      } as AnalysisChunk)
-    } else {
+  void streamOpenRouterText(prompt, {
+    modelRole: 'analysis',
+    search: true,
+    signal: controller.signal,
+    onToken: (text) => {
+      win.webContents.send('analysis:chunk', { type: 'token', text, sessionId } as AnalysisChunk)
+    },
+  }).then(() => {
+    activeApiControllers.delete(sessionId)
+    win.webContents.send('analysis:chunk', { type: 'done', sessionId } as AnalysisChunk)
+  }).catch((err: Error) => {
+    activeApiControllers.delete(sessionId)
+    if (controller.signal.aborted) {
       win.webContents.send('analysis:chunk', { type: 'done', sessionId } as AnalysisChunk)
+      return
     }
-  })
-
-  proc.on('error', (err) => {
     win.webContents.send('analysis:chunk', { type: 'error', error: err.message, sessionId } as AnalysisChunk)
   })
 
@@ -263,6 +186,11 @@ export function cancelAnalysis(sessionId: string) {
   if (proc) {
     proc.kill()
     activeProcesses.delete(sessionId)
+  }
+  const controller = activeApiControllers.get(sessionId)
+  if (controller) {
+    controller.abort()
+    activeApiControllers.delete(sessionId)
   }
 }
 

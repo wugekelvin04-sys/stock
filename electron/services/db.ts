@@ -285,6 +285,111 @@ export function setSetting(key: string, value: string) {
   getDb().prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(key, value)
 }
 
+export interface AiSettings {
+  provider: 'openrouter'
+  openrouterApiKeyConfigured: boolean
+  openrouterApiKey?: string
+  openrouterApiBase: string
+  analysisModel: string
+  searchModel: string
+  cheapModel: string
+  searchEnabled: boolean
+  searchEngine: 'parallel' | 'exa' | 'native' | ''
+  searchMaxResults: number
+  searchMaxCalls: number
+}
+
+export interface AiSettingsUpdate {
+  openrouterApiKey?: string
+  clearOpenrouterApiKey?: boolean
+  openrouterApiBase?: string
+  analysisModel?: string
+  searchModel?: string
+  cheapModel?: string
+  searchEnabled?: boolean
+  searchEngine?: AiSettings['searchEngine']
+  searchMaxResults?: number
+  searchMaxCalls?: number
+}
+
+export interface PrefetchSettings {
+  enabled: boolean
+  scope: 'holdings' | 'holdings_watchlist'
+  allowSearch: boolean
+  intervalMinutes: number
+  maxSymbolsPerRun: number
+}
+
+export interface PrefetchSettingsUpdate {
+  enabled?: boolean
+  scope?: PrefetchSettings['scope']
+  allowSearch?: boolean
+  intervalMinutes?: number
+  maxSymbolsPerRun?: number
+}
+
+function boolSetting(key: string, fallback: boolean): boolean {
+  return getSetting(key, fallback ? 'true' : 'false') === 'true'
+}
+
+function numberSetting(key: string, fallback: number, min: number, max: number): number {
+  const n = Number(getSetting(key, String(fallback)))
+  if (!Number.isFinite(n)) return fallback
+  return Math.max(min, Math.min(max, Math.floor(n)))
+}
+
+export function getAiSettings(includeSecret = false): AiSettings {
+  const savedKey = getSetting('ai.apiKey.openrouter', '')
+  const envKey = process.env.OPENROUTER_API_KEY ?? ''
+  const key = savedKey || envKey
+  return {
+    provider: 'openrouter',
+    openrouterApiKeyConfigured: Boolean(key),
+    openrouterApiKey: includeSecret ? key : undefined,
+    openrouterApiBase: getSetting('ai.apiBase.openrouter', 'https://openrouter.ai/api/v1'),
+    analysisModel: getSetting('ai.model.analysis', 'deepseek/deepseek-v4-flash'),
+    searchModel: getSetting('ai.model.search', 'deepseek/deepseek-v4-flash'),
+    cheapModel: getSetting('ai.model.cheap', 'deepseek/deepseek-v4-flash'),
+    searchEnabled: boolSetting('ai.search.enabled', true),
+    searchEngine: getSetting('ai.search.engine', 'parallel') as AiSettings['searchEngine'],
+    searchMaxResults: numberSetting('ai.search.maxResults', 5, 1, 10),
+    searchMaxCalls: numberSetting('ai.search.maxCalls', 2, 0, 5),
+  }
+}
+
+export function updateAiSettings(update: AiSettingsUpdate) {
+  if (update.clearOpenrouterApiKey) setSetting('ai.apiKey.openrouter', '')
+  else if (update.openrouterApiKey !== undefined && update.openrouterApiKey.trim()) {
+    setSetting('ai.apiKey.openrouter', update.openrouterApiKey.trim())
+  }
+  if (update.openrouterApiBase !== undefined) setSetting('ai.apiBase.openrouter', update.openrouterApiBase.trim())
+  if (update.analysisModel !== undefined) setSetting('ai.model.analysis', update.analysisModel.trim())
+  if (update.searchModel !== undefined) setSetting('ai.model.search', update.searchModel.trim())
+  if (update.cheapModel !== undefined) setSetting('ai.model.cheap', update.cheapModel.trim())
+  if (update.searchEnabled !== undefined) setSetting('ai.search.enabled', String(update.searchEnabled))
+  if (update.searchEngine !== undefined) setSetting('ai.search.engine', update.searchEngine)
+  if (update.searchMaxResults !== undefined) setSetting('ai.search.maxResults', String(update.searchMaxResults))
+  if (update.searchMaxCalls !== undefined) setSetting('ai.search.maxCalls', String(update.searchMaxCalls))
+}
+
+export function getPrefetchSettings(): PrefetchSettings {
+  return {
+    enabled: boolSetting('prefetch.enabled', false),
+    scope: getSetting('prefetch.scope', 'holdings') as PrefetchSettings['scope'],
+    allowSearch: boolSetting('prefetch.allowSearch', false),
+    intervalMinutes: numberSetting('prefetch.intervalMinutes', 60, 10, 1440),
+    maxSymbolsPerRun: numberSetting('prefetch.maxSymbolsPerRun', 10, 1, 100),
+  }
+}
+
+export function updatePrefetchSettings(update: PrefetchSettingsUpdate) {
+  if (update.enabled !== undefined) setSetting('prefetch.enabled', String(update.enabled))
+  if (update.scope !== undefined) setSetting('prefetch.scope', update.scope)
+  if (update.allowSearch !== undefined) setSetting('prefetch.allowSearch', String(update.allowSearch))
+  if (update.intervalMinutes !== undefined) setSetting('prefetch.intervalMinutes', String(update.intervalMinutes))
+  if (update.maxSymbolsPerRun !== undefined) setSetting('prefetch.maxSymbolsPerRun', String(update.maxSymbolsPerRun))
+}
+
 // ── Watchlist ─────────────────────────────────────────────────────────────────
 
 export interface WatchGroup {

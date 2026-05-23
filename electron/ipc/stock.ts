@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { getStockProfile, saveStockProfile, getStockCatalyst, saveStockCatalyst, getStockRatings, saveStockRatings, getStockEarnings, saveStockEarnings } from '../services/db'
 import type { StockProfile, StockCatalyst, StockRatings, StockEarnings } from '../services/db'
-import { detectClaude, streamClaude } from '../services/claude'
+import { streamOpenRouterText } from '../services/ai/openrouter'
 
 const PROFILE_PROMPT = (symbol: string) =>
   `用 WebSearch 搜索 ${symbol} 公司基本信息。搜索完成后，直接输出以下格式，除此之外不要输出任何文字（不要说"我来搜索"，不要说"以下是"，不要输出 Sources，不要输出链接，不要输出任何解释）：
@@ -94,11 +94,50 @@ function todayET(): string {
 
 // 防止同一 symbol 并发重复生成（主要应对 React StrictMode 的 double-invoke）
 const inFlight = new Map<string, string>()
+const activeControllers = new Map<string, AbortController>()
 
 function guard(key: string, sessionId: string): boolean {
   if (inFlight.has(key)) return false
   inFlight.set(key, sessionId)
   return true
+}
+
+function runApiStream({
+  key,
+  sessionId,
+  prompt,
+  modelRole,
+  search,
+  onToken,
+  onDone,
+  onError,
+}: {
+  key: string
+  sessionId: string
+  prompt: string
+  modelRole: 'search' | 'cheap'
+  search: boolean
+  onToken: (text: string) => void
+  onDone: () => void
+  onError: (err: string) => void
+}) {
+  const controller = new AbortController()
+  activeControllers.set(sessionId, controller)
+  void streamOpenRouterText(prompt, {
+    modelRole,
+    search,
+    signal: controller.signal,
+    onToken,
+  }).then(() => {
+    inFlight.delete(key)
+    activeControllers.delete(sessionId)
+    onDone()
+  }).catch((err: Error) => {
+    inFlight.delete(key)
+    activeControllers.delete(sessionId)
+    if (controller.signal.aborted) onDone()
+    else onError(err.message)
+  })
 }
 
 export function registerStockHandlers() {
@@ -107,23 +146,23 @@ export function registerStockHandlers() {
     return getStockProfile(symbol)
   })
 
-  // Generate profile via Claude (streaming), save when done
+  // Generate profile via API (streaming), save when done
   ipcMain.handle('stock:profile:generate', async (_e, symbol: string): Promise<{ sessionId: string }> => {
     const key = `profile:${symbol}`
     const sessionId = `profile-${symbol}-${Date.now()}`
     if (!guard(key, sessionId)) return { sessionId: inFlight.get(key)! }
 
-    const info = await detectClaude()
-    if (!info.ok || !info.path) { inFlight.delete(key); throw new Error(info.error ?? 'claude not found') }
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) { inFlight.delete(key); throw new Error('no window') }
 
     let accumulated = ''
 
-    streamClaude({
-      claudeBin: info.path,
+    runApiStream({
+      key,
       prompt: PROFILE_PROMPT(symbol),
       sessionId,
+      modelRole: 'cheap',
+      search: false,
       onToken: (text) => {
         accumulated += text
         win.webContents.send('stock:profile:chunk', { sessionId, type: 'token', text })
@@ -138,7 +177,6 @@ export function registerStockHandlers() {
         win.webContents.send('stock:profile:chunk', { sessionId, type: 'done' })
       },
       onError: (err) => {
-        inFlight.delete(key)
         win.webContents.send('stock:profile:chunk', { sessionId, type: 'error', error: err })
       },
     })
@@ -151,35 +189,33 @@ export function registerStockHandlers() {
     return getStockCatalyst(symbol, todayET())
   })
 
-  // Generate catalyst via Claude (streaming), save when done
+  // Generate catalyst via API (streaming), save when done
   ipcMain.handle('stock:catalyst:generate', async (_e, symbol: string): Promise<{ sessionId: string }> => {
     const key = `catalyst:${symbol}`
     const sessionId = `catalyst-${symbol}-${Date.now()}`
     if (!guard(key, sessionId)) return { sessionId: inFlight.get(key)! }
 
-    const info = await detectClaude()
-    if (!info.ok || !info.path) { inFlight.delete(key); throw new Error(info.error ?? 'claude not found') }
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) { inFlight.delete(key); throw new Error('no window') }
 
     let accumulated = ''
     const date = todayET()
 
-    streamClaude({
-      claudeBin: info.path,
+    runApiStream({
+      key,
       prompt: CATALYST_PROMPT(symbol),
       sessionId,
+      modelRole: 'search',
+      search: true,
       onToken: (text) => {
         accumulated += text
         win.webContents.send('stock:catalyst:chunk', { sessionId, type: 'token', text })
       },
       onDone: () => {
-        inFlight.delete(key)
         saveStockCatalyst(symbol, date, accumulated)
         win.webContents.send('stock:catalyst:chunk', { sessionId, type: 'done' })
       },
       onError: (err) => {
-        inFlight.delete(key)
         win.webContents.send('stock:catalyst:chunk', { sessionId, type: 'error', error: err })
       },
     })
@@ -205,23 +241,22 @@ export function registerStockHandlers() {
     const sessionId = `earnings-${symbol}-${Date.now()}`
     if (!guard(key, sessionId)) return { sessionId: inFlight.get(key)! }
 
-    const info = await detectClaude()
-    if (!info.ok || !info.path) { inFlight.delete(key); throw new Error(info.error ?? 'claude not found') }
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) { inFlight.delete(key); throw new Error('no window') }
 
     let accumulated = ''
 
-    streamClaude({
-      claudeBin: info.path,
+    runApiStream({
+      key,
       prompt: EARNINGS_PROMPT(symbol),
       sessionId,
+      modelRole: 'search',
+      search: true,
       onToken: (text) => {
         accumulated += text
         win.webContents.send('stock:earnings:chunk', { sessionId, type: 'token', text })
       },
       onDone: () => {
-        inFlight.delete(key)
         // 解析下次财报日期用于缓存过期判断
         const dateMatch = accumulated.match(/日期[:：]\s*(\d{4}-\d{2}-\d{2})/)
         const nextDate = dateMatch ? dateMatch[1] : '9999-12-31'
@@ -229,7 +264,6 @@ export function registerStockHandlers() {
         win.webContents.send('stock:earnings:chunk', { sessionId, type: 'done' })
       },
       onError: (err) => {
-        inFlight.delete(key)
         win.webContents.send('stock:earnings:chunk', { sessionId, type: 'error', error: err })
       },
     })
@@ -242,14 +276,12 @@ export function registerStockHandlers() {
     return getStockRatings(symbol, todayET())
   })
 
-  // Generate ratings via Claude (streaming), save when done
+  // Generate ratings via API (streaming), save when done
   ipcMain.handle('stock:ratings:generate', async (_e, symbol: string): Promise<{ sessionId: string }> => {
     const key = `ratings:${symbol}`
     const existing = inFlight.get(key)
     if (existing) return { sessionId: existing }
 
-    const info = await detectClaude()
-    if (!info.ok || !info.path) throw new Error(info.error ?? 'claude not found')
     const win = BrowserWindow.getAllWindows()[0]
     if (!win) throw new Error('no window')
 
@@ -258,21 +290,21 @@ export function registerStockHandlers() {
     let accumulated = ''
     const date = todayET()
 
-    streamClaude({
-      claudeBin: info.path,
+    runApiStream({
+      key,
       prompt: RATINGS_PROMPT(symbol),
       sessionId,
+      modelRole: 'search',
+      search: true,
       onToken: (text) => {
         accumulated += text
         win.webContents.send('stock:ratings:chunk', { sessionId, type: 'token', text })
       },
       onDone: () => {
-        inFlight.delete(key)
         saveStockRatings(symbol, date, accumulated)
         win.webContents.send('stock:ratings:chunk', { sessionId, type: 'done' })
       },
       onError: (err) => {
-        inFlight.delete(key)
         win.webContents.send('stock:ratings:chunk', { sessionId, type: 'error', error: err })
       },
     })
@@ -296,12 +328,11 @@ export async function prefetchSymbol(
   symbol: string,
   types: PrefetchType[] = ['profile', 'catalyst', 'ratings', 'earnings'],
   onProgress?: (p: PrefetchProgress) => void,
+  opts: { allowSearch?: boolean } = {},
 ): Promise<void> {
-  const info = await detectClaude()
-  if (!info.ok || !info.path) return
-  const claudeBin = info.path
   const today = todayET()
   const sym = symbol.toUpperCase()
+  const allowSearch = opts.allowSearch ?? false
 
   const report = (type: PrefetchType, status: PrefetchProgress['status']) =>
     onProgress?.({ symbol: sym, type, status })
@@ -315,63 +346,64 @@ export async function prefetchSymbol(
         if (!guard(key, sessionId)) { report(type, 'skip'); return resolve() }
         report(type, 'running')
         let acc = ''
-        streamClaude({
-          claudeBin, prompt: PROFILE_PROMPT(sym), sessionId,
+        runApiStream({
+          key, prompt: PROFILE_PROMPT(sym), sessionId, modelRole: 'cheap', search: false,
           onToken: t => { acc += t },
           onDone: () => {
-            inFlight.delete(key)
             const tagsMatch = acc.match(/##\s*主要标签\s*\n([^\n]+)/)
             const tags = tagsMatch ? tagsMatch[1].split(',').map(t => t.trim()).filter(Boolean) : []
             saveStockProfile(sym, acc, tags)
             report(type, 'done'); resolve()
           },
-          onError: () => { inFlight.delete(key); report(type, 'error'); resolve() },
+          onError: () => { report(type, 'error'); resolve() },
         })
       } else if (type === 'catalyst') {
         if (getStockCatalyst(sym, today)) { report(type, 'skip'); return resolve() }
+        if (!allowSearch) { report(type, 'skip'); return resolve() }
         const key = `catalyst:${sym}`
         const sessionId = `catalyst-${sym}-${Date.now()}`
         if (!guard(key, sessionId)) { report(type, 'skip'); return resolve() }
         report(type, 'running')
         let acc = ''
-        streamClaude({
-          claudeBin, prompt: CATALYST_PROMPT(sym), sessionId,
+        runApiStream({
+          key, prompt: CATALYST_PROMPT(sym), sessionId, modelRole: 'search', search: true,
           onToken: t => { acc += t },
-          onDone: () => { inFlight.delete(key); saveStockCatalyst(sym, today, acc); report(type, 'done'); resolve() },
-          onError: () => { inFlight.delete(key); report(type, 'error'); resolve() },
+          onDone: () => { saveStockCatalyst(sym, today, acc); report(type, 'done'); resolve() },
+          onError: () => { report(type, 'error'); resolve() },
         })
       } else if (type === 'ratings') {
         if (getStockRatings(sym, today)) { report(type, 'skip'); return resolve() }
+        if (!allowSearch) { report(type, 'skip'); return resolve() }
         const key = `ratings:${sym}`
         const sessionId = `ratings-${sym}-${Date.now()}`
         if (!guard(key, sessionId)) { report(type, 'skip'); return resolve() }
         report(type, 'running')
         let acc = ''
-        streamClaude({
-          claudeBin, prompt: RATINGS_PROMPT(sym), sessionId,
+        runApiStream({
+          key, prompt: RATINGS_PROMPT(sym), sessionId, modelRole: 'search', search: true,
           onToken: t => { acc += t },
-          onDone: () => { inFlight.delete(key); saveStockRatings(sym, today, acc); report(type, 'done'); resolve() },
-          onError: () => { inFlight.delete(key); report(type, 'error'); resolve() },
+          onDone: () => { saveStockRatings(sym, today, acc); report(type, 'done'); resolve() },
+          onError: () => { report(type, 'error'); resolve() },
         })
       } else if (type === 'earnings') {
         const existing = getStockEarnings(sym)
         if (existing && existing.nextEarningsDate > today) { report(type, 'skip'); return resolve() }
+        if (!allowSearch) { report(type, 'skip'); return resolve() }
         const key = `earnings:${sym}`
         const sessionId = `earnings-${sym}-${Date.now()}`
         if (!guard(key, sessionId)) { report(type, 'skip'); return resolve() }
         report(type, 'running')
         let acc = ''
-        streamClaude({
-          claudeBin, prompt: EARNINGS_PROMPT(sym), sessionId,
+        runApiStream({
+          key, prompt: EARNINGS_PROMPT(sym), sessionId, modelRole: 'search', search: true,
           onToken: t => { acc += t },
           onDone: () => {
-            inFlight.delete(key)
             const dateMatch = acc.match(/日期[:：]\s*(\d{4}-\d{2}-\d{2})/)
             const nextDate = dateMatch ? dateMatch[1] : '9999-12-31'
             saveStockEarnings(sym, acc, nextDate)
             report(type, 'done'); resolve()
           },
-          onError: () => { inFlight.delete(key); report(type, 'error'); resolve() },
+          onError: () => { report(type, 'error'); resolve() },
         })
       }
     })

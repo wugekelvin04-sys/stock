@@ -4,6 +4,7 @@ import type { SectorPick } from './services/db'
 import type { HoldingRecord, ImportHint } from './services/parser'
 import type { HoldingRow } from './services/db'
 import type { AnalysisContext, AnalysisChunk, AnalysisMode, ChatMessage } from './services/claude'
+import type { AiSettings, AiSettingsUpdate, PrefetchSettings, PrefetchSettingsUpdate } from './services/db'
 
 const api = {
   // ── App ────────────────────────────────────────────────────────────────────
@@ -167,6 +168,15 @@ const api = {
       ipcRenderer.on('prefetch:progress', h)
       return () => ipcRenderer.off('prefetch:progress', h)
     },
+  },
+
+  // ── Settings ───────────────────────────────────────────────────────────────
+  settings: {
+    getAi: () => ipcRenderer.invoke('settings:ai:get') as Promise<AiSettings>,
+    updateAi: (update: AiSettingsUpdate) => ipcRenderer.invoke('settings:ai:update', update) as Promise<AiSettings>,
+    getPrefetch: () => ipcRenderer.invoke('settings:prefetch:get') as Promise<PrefetchSettings>,
+    updatePrefetch: (update: PrefetchSettingsUpdate) =>
+      ipcRenderer.invoke('settings:prefetch:update', update) as Promise<PrefetchSettings>,
   },
 
   // ── Shell ──────────────────────────────────────────────────────────────────
